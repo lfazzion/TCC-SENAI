@@ -11,6 +11,19 @@
  * - Uso de strncpy() e snprintf() para operações seguras de string
  * - Redução significativa da fragmentação de memória heap
  *
+ * MELHORIAS DE PRECISÃO NAS MEDIÇÕES:
+ * - Implementação de Média Aparada Rápida (6 amostras, descarta 15% dos
+ * extremos)
+ * - Eliminação automática de valores extremos (ruído) das medições
+ * - Melhor precisão e confiabilidade nas medições de resistência
+ * - Consistência entre calibração e teste usando mesmo método estatístico
+ *
+ * MÉDIA APARADA (TRIMMED MEAN):
+ * - Ordena as amostras em ordem crescente
+ * - Descarta percentual configurado dos valores extremos (mais altos e baixos)
+ * - Calcula média com os valores centrais restantes
+ * - Reduz significativamente a influência de picos de ruído
+ *
  * Referências:
  * - Documentação da biblioteca ADS1X15: https://github.com/RobTillaart/ADS1X15
  * - Manipulação String -> Array:
@@ -41,6 +54,10 @@
 #define MEAN 20
 #define res_ref 99.781
 #define LIMITE_RESISTENCIA_ABERTO 100.0  // Padronizado para 100 Ω
+
+// --- Configuração de Medição ---
+// Usa média aparada rápida com 6 amostras e descarte de 15% dos extremos
+// Oferece boa precisão com velocidade adequada para testes em produção
 
 // --- Critérios de Avaliação Melhorados ---
 #define LIMITE_BAIXA_RESISTENCIA 15.0    // Aumentado de 10.0 para 15.0 Ω
@@ -157,12 +174,6 @@ float calcularMediaAparada(float valores[], int n, float percentual_descarte) {
         soma += valoresOrdenados[i];
     }
 
-    DEBUG_PRINT("Média aparada: descartados ");
-    DEBUG_PRINT(valores_descarte);
-    DEBUG_PRINT(" valores de cada extremo, usando ");
-    DEBUG_PRINT(valores_usados);
-    DEBUG_PRINT(" valores centrais");
-
     return soma / valores_usados;
 }
 
@@ -194,12 +205,6 @@ float get_res_calibracao() {
     float test_volts_ref = ADS.toVoltage(test_val_01);
     float test_volts = ADS.toVoltage(test_val_13);
 
-    DEBUG_PRINT("get_res_calibracao: teste rápido - volts_ref=");
-    DEBUG_PRINT(test_volts_ref);
-    DEBUG_PRINT("V, volts=");
-    DEBUG_PRINT(test_volts);
-    DEBUG_PRINTLN("V");
-
     // Detecção de circuito aberto
     if (abs(test_volts_ref) < 0.001 && abs(test_volts) < 0.001) {
         DEBUG_PRINTLN("get_res_calibracao: circuito aberto detectado");
@@ -230,15 +235,11 @@ float get_res_calibracao() {
         // Validação rigorosa dos valores
         if (isnan(volts_ref) || isnan(volts) || isinf(volts_ref) ||
             isinf(volts)) {
-            DEBUG_PRINT("get_res_calibracao: valor inválido na leitura ");
-            DEBUG_PRINTLN(i + 1);
             continue;
         }
 
         // Detecção de problemas de leitura
         if (abs(volts_ref) < 0.00001 || abs(volts) < 0.0001) {
-            DEBUG_PRINT("get_res_calibracao: tensão muito baixa na leitura ");
-            DEBUG_PRINTLN(i + 1);
             return 10000.0;
         }
 
@@ -246,23 +247,12 @@ float get_res_calibracao() {
 
         // Validação do resultado
         if (isnan(resistencia) || isinf(resistencia)) {
-            DEBUG_PRINT("get_res_calibracao: resistência inválida na leitura ");
-            DEBUG_PRINTLN(i + 1);
             continue;
         }
 
         if (resistencia > 50000.0 || resistencia < -1000.0) {
-            DEBUG_PRINT(
-                "get_res_calibracao: resistência fora da faixa na leitura ");
-            DEBUG_PRINTLN(i + 1);
             continue;
         }
-
-        DEBUG_PRINT("get_res_calibracao: leitura #");
-        DEBUG_PRINT(i + 1);
-        DEBUG_PRINT(" -> ");
-        DEBUG_PRINT(resistencia);
-        DEBUG_PRINTLN(" Ω");
 
         soma += resistencia;
         leituras_validas++;
@@ -278,12 +268,6 @@ float get_res_calibracao() {
     }
 
     float media = soma / leituras_validas;
-    DEBUG_PRINT("get_res_calibracao: média final = ");
-    DEBUG_PRINT(media);
-    DEBUG_PRINT(" Ω (");
-    DEBUG_PRINT(leituras_validas);
-    DEBUG_PRINT(" leituras válidas)");
-    DEBUG_PRINTLN();
 
     return media;
 }
@@ -428,11 +412,6 @@ void updateAdaptiveInterval(bool success) {
             adaptiveInterval = min(200UL, adaptiveInterval + 20);
         }
     }
-
-    DEBUG_PRINT("Intervalo adaptativo: ");
-    DEBUG_PRINT(adaptiveInterval);
-    DEBUG_PRINT("ms, falhas consecutivas: ");
-    DEBUG_PRINTLN(consecutiveFailures);
 }
 
 bool canSendMessage() {
@@ -452,9 +431,6 @@ void sendAck(const char* messageId) {
     ackDoc["messageId"] = messageId;
     ackDoc["timestamp"] = millis();
 
-    DEBUG_PRINT("Enviando ACK para: ");
-    DEBUG_PRINTLN(messageId);
-
     sendJsonResponse(ackDoc);
 }
 
@@ -465,12 +441,6 @@ void sendAck(const char* messageId) {
  * @param bufferSize Tamanho do buffer
  */
 void resistenciaParaString(float resistencia, char* buffer, size_t bufferSize) {
-    DEBUG_PRINT("resistenciaParaString: valor=");
-    DEBUG_PRINT(resistencia);
-    DEBUG_PRINT(" Ω, limite_aberto=");
-    DEBUG_PRINT(LIMITE_RESISTENCIA_ABERTO);
-    DEBUG_PRINT(" Ω -> ");
-
     if (resistencia == -1.0) {
         // Caso especial: erro na medição
         strncpy(buffer, "ERRO", bufferSize - 1);
@@ -545,12 +515,6 @@ float get_res() {
     float test_volts_ref = ADS.toVoltage(test_val_01);
     float test_volts = ADS.toVoltage(test_val_13);
 
-    DEBUG_PRINT("get_res: teste rápido - volts_ref=");
-    DEBUG_PRINT(test_volts_ref);
-    DEBUG_PRINT("V, volts=");
-    DEBUG_PRINT(test_volts);
-    DEBUG_PRINTLN("V");
-
     // Se ambos os valores são muito pequenos, provavelmente é circuito aberto
     if (abs(test_volts_ref) < 0.001 && abs(test_volts) < 0.001) {
         DEBUG_PRINTLN(
@@ -564,13 +528,13 @@ float get_res() {
         return 10000.0;
     }
 
-    // Realiza apenas 3 leituras para reduzir complexidade
-    const int NUM_LEITURAS = 3;
-    float soma = 0.0;
+    // Aumenta o número de leituras para aplicar a média aparada
+    const int NUM_LEITURAS = 6;
+    float resistencias[NUM_LEITURAS];
     int leituras_validas = 0;
 
     for (int i = 0; i < NUM_LEITURAS; i++) {
-        delay(5);  // Pequeno delay entre leituras
+        delay(5);  // Delay menor para velocidade
 
         int16_t val_01 = ADS.readADC_Differential_0_1();
         delay(2);
@@ -629,35 +593,22 @@ float get_res() {
             return 10000.0;  // Trata como circuito aberto
         }
 
-        // Debug para acompanhar as leituras
-        DEBUG_PRINT("get_res: leitura #");
-        DEBUG_PRINT(leituras_validas + 1);
-        DEBUG_PRINT(" -> volts_ref=");
-        DEBUG_PRINT(volts_ref);
-        DEBUG_PRINT("V, volts=");
-        DEBUG_PRINT(volts);
-        DEBUG_PRINT("V, resistencia=");
-        DEBUG_PRINT(resistencia);
-        DEBUG_PRINTLN(" Ω");
-
-        soma += resistencia;
+        resistencias[leituras_validas] = resistencia;
         leituras_validas++;
     }
 
-    if (leituras_validas < 2) {  // Precisa de pelo menos 2 leituras válidas
-        DEBUG_PRINT("get_res: Poucas leituras válidas: ");
-        DEBUG_PRINT(leituras_validas);
-        DEBUG_PRINTLN(" - assumindo circuito aberto");
+    if (leituras_validas <
+        4) {  // Precisa de pelo menos 4 leituras válidas para média aparada
         return 10000.0;  // Assume circuito aberto
     }
 
-    // Retorna média simples
-    float media = soma / leituras_validas;
-    DEBUG_PRINT("get_res: média final = ");
-    DEBUG_PRINT(media);
-    DEBUG_PRINTLN(" Ω");
-    return media;
+    // Aplica média aparada com 15% de descarte (adaptado para 6 amostras)
+    float media_aparada =
+        calcularMediaAparada(resistencias, leituras_validas, 0.15);
+    return media_aparada;
 }
+
+
 
 void action_relay(int relay_action) {
     relay_state = !relay_state;
@@ -675,6 +626,8 @@ void action_relay(int relay_action) {
     DEBUG_PRINT(" ");
     DEBUG_PRINTLN(relay_status);
 }
+
+
 
 // =================================================================
 // FUNÇÕES DE COMUNICAÇÃO BLE
@@ -778,9 +731,6 @@ bool sendCriticalMessage(const JsonDocument& doc, bool requiresAck = true) {
         awaitingAck = true;
         ackTimeout = millis() + 5000;  // 5 segundos timeout
         commState = COMM_WAITING_ACK;
-
-        DEBUG_PRINT("Mensagem crítica enviada, aguardando ACK: ");
-        DEBUG_PRINTLN(currentMessageId);
     }
 
     return success;
@@ -889,12 +839,6 @@ bool checkConnection() {
  * Envia status para o WebApp e aguarda confirmação física
  */
 void aguardarBotaoJiga(const char* mensagem = "") {
-    DEBUG_PRINTLN(">>> Aguardando botão da jiga...");
-    DEBUG_PRINT("Mensagem: ");
-    DEBUG_PRINTLN(mensagem);
-    DEBUG_PRINT("Conectado: ");
-    DEBUG_PRINTLN(deviceConnected ? "SIM" : "NÃO");
-
     // Atualiza estado do dispositivo
     currentDeviceState = DEVICE_WAITING_BUTTON;
 
@@ -907,7 +851,6 @@ void aguardarBotaoJiga(const char* mensagem = "") {
         promptDoc["message"] = "Pressione o botão na jiga para continuar";
     }
 
-    DEBUG_PRINTLN("Enviando prompt para WebApp...");
     if (!sendCriticalPrompt(promptDoc)) {
         DEBUG_PRINTLN("ERRO: Falha ao enviar prompt - conexão instável");
         return;
@@ -918,10 +861,6 @@ void aguardarBotaoJiga(const char* mensagem = "") {
     // Acende LED indicativo
     digitalWrite(LED_CONT, 1);
     state_RGB('O');  // Azul - aguardando
-
-    DEBUG_PRINTLN("Aguardando pressionar botão físico...");
-    DEBUG_PRINT("Estado inicial do botão: ");
-    DEBUG_PRINTLN(digitalRead(BUTTON));
 
     // Aguarda botão ser pressionado com timeout e verificação de conexão
     unsigned long startTime = millis();
@@ -1000,8 +939,6 @@ void aguardarConfirmacaoWebApp() {
 // =================================================================
 
 void calibrate() {
-    DEBUG_PRINTLN("=== INICIANDO CALIBRAÇÃO COM MÚLTIPLAS VERIFICAÇÕES ===");
-
     // Atualiza estado do dispositivo
     currentDeviceState = DEVICE_CALIBRATING;
     currentTestStep = -1;
@@ -1043,18 +980,8 @@ void calibrate() {
     state_RGB('R');  // Vermelho - processando
     delay(500);      // Aguarda estabilização
 
-    DEBUG_PRINT("Realizando ");
-    DEBUG_PRINT(NUM_VERIFICACOES);
-    DEBUG_PRINTLN(" verificações de calibração...");
-
     // Realiza múltiplas verificações de calibração
     for (int i = 0; i < NUM_VERIFICACOES; i++) {
-        DEBUG_PRINT("Verificação ");
-        DEBUG_PRINT(i + 1);
-        DEBUG_PRINT("/");
-        DEBUG_PRINT(NUM_VERIFICACOES);
-        DEBUG_PRINTLN(":");
-
         // Aguarda entre verificações para garantir estabilidade
         if (i > 0) {
             delay(1000);
@@ -1064,9 +991,6 @@ void calibrate() {
         float medicao = get_res_calibracao();
 
         if (medicao == -1.0) {
-            DEBUG_PRINT("Falha na verificação ");
-            DEBUG_PRINT(i + 1);
-            DEBUG_PRINTLN(" - ignorando");
             continue;
         }
 
@@ -1074,22 +998,11 @@ void calibrate() {
         // calibração
         if (medicao >
             100.0) {  // Muito alta para uma calibração (curto-circuito)
-            DEBUG_PRINT("Verificação ");
-            DEBUG_PRINT(i + 1);
-            DEBUG_PRINT(" rejeitada - valor muito alto: ");
-            DEBUG_PRINT(medicao);
-            DEBUG_PRINTLN(" Ω");
             continue;
         }
 
         medicoes_cal[medicoes_validas] = medicao;
         medicoes_validas++;
-
-        DEBUG_PRINT("Verificação ");
-        DEBUG_PRINT(i + 1);
-        DEBUG_PRINT(" válida: ");
-        DEBUG_PRINT(medicao);
-        DEBUG_PRINTLN(" Ω");
 
         // Feedback visual
         digitalWrite(LED_CONT, !digitalRead(LED_CONT));
@@ -1105,10 +1018,6 @@ void calibrate() {
             "Falha na calibração - medições insuficientes. Verifique o "
             "curto-circuito.";
         sendJsonResponse(errorDoc);
-
-        DEBUG_PRINT("Erro: apenas ");
-        DEBUG_PRINT(medicoes_validas);
-        DEBUG_PRINTLN(" medições válidas");
 
         delay(2000);
         reset_output();
@@ -1131,16 +1040,6 @@ void calibrate() {
     float media = soma / medicoes_validas;
     float variacao = (valor_max - valor_min) / media;
 
-    DEBUG_PRINT("Estatísticas da calibração: média=");
-    DEBUG_PRINT(media);
-    DEBUG_PRINT(" Ω, min=");
-    DEBUG_PRINT(valor_min);
-    DEBUG_PRINT(" Ω, max=");
-    DEBUG_PRINT(valor_max);
-    DEBUG_PRINT(" Ω, variação=");
-    DEBUG_PRINT(variacao * 100);
-    DEBUG_PRINTLN("%");
-
     // Verifica se a variação entre medições é aceitável
     if (variacao > TOLERANCIA_VARIACAO) {
         state_RGB('R');  // Vermelho - erro
@@ -1151,12 +1050,6 @@ void calibrate() {
             "Variação alta entre medições. Verifique a estabilidade do "
             "contato.";
         sendJsonResponse(errorDoc);
-
-        DEBUG_PRINT("Aviso: variação alta entre medições: ");
-        DEBUG_PRINT(variacao * 100);
-        DEBUG_PRINT("% (limite: ");
-        DEBUG_PRINT(TOLERANCIA_VARIACAO * 100);
-        DEBUG_PRINTLN("%)");
 
         // Prossegue com a calibração mas com aviso
         delay(2000);
@@ -1190,15 +1083,6 @@ void calibrate() {
 
     char res_cal_str[32];
     snprintf(res_cal_str, sizeof(res_cal_str), "%.6f", res_cal);
-
-    DEBUG_PRINT("Calibração concluída: ");
-    DEBUG_PRINT(res_cal_str);
-    DEBUG_PRINT(" Ω (");
-    DEBUG_PRINT(medicoes_validas);
-    DEBUG_PRINT(" verificações, variação: ");
-    DEBUG_PRINT(variacao * 100);
-    DEBUG_PRINT("%)");
-    DEBUG_PRINTLN();
 
     // Envia resultado da calibração
     StaticJsonDocument<200> calDoc;
@@ -1245,10 +1129,6 @@ float medirResistencia() {
     int tentativas_max = MEAN * 3;  // Permite mais tentativas
     int tentativas = 0;
 
-    DEBUG_PRINT("Coletando ");
-    DEBUG_PRINT(MEAN);
-    DEBUG_PRINTLN(" amostras para média aparada...");
-
     // Coleta as amostras
     while (leituras_validas < MEAN && tentativas < tentativas_max) {
         float leitura = get_res();
@@ -1276,17 +1156,6 @@ float medirResistencia() {
         }
 
         delay(10);
-
-        // Watchdog para evitar travamentos
-        if (tentativas > 0 && tentativas % 10 == 0) {
-            DEBUG_PRINT("Progresso: ");
-            DEBUG_PRINT(leituras_validas);
-            DEBUG_PRINT("/");
-            DEBUG_PRINT(MEAN);
-            DEBUG_PRINT(" (tentativas: ");
-            DEBUG_PRINT(tentativas);
-            DEBUG_PRINTLN(")");
-        }
     }
 
     // Verifica se coletou amostras suficientes
@@ -1296,23 +1165,12 @@ float medirResistencia() {
         state_RGB('R');
         delay(500);
         reset_output();
-        DEBUG_PRINT("Erro: leituras insuficientes: ");
-        DEBUG_PRINT(leituras_validas);
-        DEBUG_PRINT("/");
-        DEBUG_PRINT(MEAN);
-        DEBUG_PRINT(" (mínimo: ");
-        DEBUG_PRINT(minimo_leituras);
-        DEBUG_PRINTLN(")");
         return -1.0;
     }
 
     // Aplica média aparada (descarta 10% dos valores extremos)
     float resistencia_bruta =
         calcularMediaAparada(amostras, leituras_validas, 0.1);
-
-    DEBUG_PRINT("Resistência bruta (média aparada): ");
-    DEBUG_PRINT(resistencia_bruta);
-    DEBUG_PRINTLN(" Ω");
 
     // Aplica calibração
     float resistencia;
@@ -1325,25 +1183,10 @@ float medirResistencia() {
         resistencia = resistencia_bruta - res_cal;
     }
 
-    DEBUG_PRINT("Medição detalhada: resistencia_bruta=");
-    DEBUG_PRINT(resistencia_bruta);
-    DEBUG_PRINT(" Ω, res_cal=");
-    DEBUG_PRINT(res_cal);
-    DEBUG_PRINT(" Ω, resistencia_final=");
-    DEBUG_PRINT(resistencia);
-    DEBUG_PRINTLN(" Ω");
-
     digitalWrite(LED_CONT, 0);
     state_RGB('B');
     delay(300);
     reset_output();
-
-    DEBUG_PRINT("Medição concluída com média aparada: ");
-    DEBUG_PRINT(resistencia);
-    DEBUG_PRINT(" Ω (");
-    DEBUG_PRINT(leituras_validas);
-    DEBUG_PRINT(" amostras)");
-    DEBUG_PRINTLN();
 
     return resistencia;
 }
@@ -1357,8 +1200,6 @@ float medirResistencia() {
  * estados sem avaliar se passou ou falhou, apenas registramos os valores
  */
 void executarTesteEspecialUmContato(const TestConfig& config) {
-    DEBUG_PRINTLN("=== TESTE ESPECIAL PARA 1 CONTATO ===");
-
     // Envia status inicial
     StaticJsonDocument<200> statusDoc;
     statusDoc["status"] = "test_special_init";
@@ -1375,8 +1216,6 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     sendJsonResponse(initDoc);
 
     // --- TESTE 1: ESTADO DESENERGIZADO ---
-    DEBUG_PRINTLN("\n=== TESTE 1: RELÉ DESENERGIZADO ===");
-
     // Sinaliza teste atual
     StaticJsonDocument<200> testingDoc;
     testingDoc["status"] = "test_current";
@@ -1416,7 +1255,6 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     testeAtual++;
 
     // --- ACIONAMENTO DO RELÉ ---
-    DEBUG_PRINTLN("\n=== ACIONANDO O RELÉ ===");
     if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
         digitalWrite(RELAY_DC, 1);
         state_RGB('O');  // Azul - energizado
@@ -1428,8 +1266,6 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     delay(500);  // Tempo para estabilização
 
     // --- TESTE 2: ESTADO ENERGIZADO ---
-    DEBUG_PRINTLN("\n=== TESTE 2: RELÉ ENERGIZADO ===");
-
     testingDoc["testIndex"] = testeAtual;
     testingDoc["pair"] = 0;
     testingDoc["state"] = "ENERGIZADO";
@@ -1461,7 +1297,6 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     delay(100);
 
     // --- FINALIZAÇÃO ---
-    DEBUG_PRINTLN("\n=== FINALIZANDO TESTE ESPECIAL ===");
     if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
         digitalWrite(RELAY_DC, 0);
     } else {  // TIPO_AC
@@ -1473,21 +1308,10 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     // Aguarda um pouco antes de enviar o status final
     delay(500);  // Aumentado para dar tempo para a conexão se estabilizar
 
-    DEBUG_PRINTLN("Enviando test_complete para finalizar teste especial...");
-
     StaticJsonDocument<200> completeDoc;
     completeDoc["status"] = "test_complete";
     completeDoc["message"] = "Teste especial finalizado com sucesso";
-
-    // Envia como mensagem crítica com ACK
-    if (sendCriticalMessage(completeDoc)) {
-        DEBUG_PRINTLN("test_complete enviado com sucesso");
-    } else {
-        DEBUG_PRINTLN(
-            "Falha ao enviar test_complete - conexão pode estar instável");
-    }
-
-    DEBUG_PRINTLN("=== TESTE ESPECIAL FINALIZADO ===\n");
+    sendJsonResponse(completeDoc);
 
     // Retorna ao estado idle
     currentDeviceState = DEVICE_IDLE;
@@ -1512,14 +1336,6 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
  * ao próximo Benefício: menos trocas de contatos, mais prático para o operador
  */
 void executarTesteConfiguravel(const TestConfig& config) {
-    DEBUG_PRINTLN("=== INICIANDO TESTE DE RELÉ CONFIGURÁVEL ===");
-    DEBUG_PRINTLN("Configuração:");
-    DEBUG_PRINT("- Tipo de Acionamento: ");
-    DEBUG_PRINTLN(config.tipoAcionamento);
-    DEBUG_PRINT("- Quantidade de Contatos: ");
-    DEBUG_PRINTLN(config.quantidadeContatos);
-    DEBUG_PRINTLN("==========================================================");
-
     // Atualiza estado do dispositivo
     currentDeviceState = DEVICE_TESTING;
     currentTestStep = 0;
@@ -1548,8 +1364,6 @@ void executarTesteConfiguravel(const TestConfig& config) {
         config.quantidadeContatos * 2;  // Cada contato testado em 2 estados
     int testeAtual = 0;
 
-    DEBUG_PRINTLN("=== EXECUTANDO TESTE PADRÃO ===");
-
     char debug_str[BUFFER_SIZE_DEBUG];
     snprintf(debug_str, sizeof(debug_str), "Número de contatos NF: %d",
              numContatosNF);
@@ -1568,9 +1382,7 @@ void executarTesteConfiguravel(const TestConfig& config) {
     initDoc["totalTests"] = totalTestes;
     sendJsonResponse(initDoc);
 
-    // --- NOVA ORDEM ALTERNADA: TESTA CADA CONTATO COMPLETAMENTE ---
-    DEBUG_PRINTLN("\n=== EXECUTANDO TESTES EM ORDEM ALTERNADA ===");
-
+    // --- ORDEM ALTERNADA: TESTA CADA CONTATO COMPLETAMENTE ---
     // Calcula o número máximo de contatos para iterar
     int maxContatos =
         (numContatosNF > numContatosNA) ? numContatosNF : numContatosNA;
@@ -1760,17 +1572,6 @@ void executarTesteConfiguravel(const TestConfig& config) {
                 char res_str[BUFFER_SIZE_RESISTENCIA];
                 resistenciaParaString(resistencia, res_str, sizeof(res_str));
 
-                // Debug específico para teste de circuito aberto
-                DEBUG_PRINT("Teste NA desenergizado: resistencia=");
-                DEBUG_PRINT(resistencia);
-                DEBUG_PRINT(" Ω, limite=");
-                DEBUG_PRINT(LIMITE_RESISTENCIA_MINIMA);
-                DEBUG_PRINT(" Ω, resultado=");
-                DEBUG_PRINT(res_str);
-                DEBUG_PRINT(", passou=");
-                DEBUG_PRINTLN(
-                    (resistencia > LIMITE_RESISTENCIA_MINIMA) ? "SIM" : "NÃO");
-
                 // Envia resultado - NA desenergizado deve estar aberto
                 StaticJsonDocument<200> resultDoc;
                 resultDoc["status"] = "test_result";
@@ -1867,8 +1668,6 @@ void executarTesteConfiguravel(const TestConfig& config) {
     }
 
     // --- FINALIZAÇÃO ---
-    DEBUG_PRINTLN("\n=== FINALIZANDO TESTE ===");
-
     // Garante que o relé está desacionado
     if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
         digitalWrite(RELAY_DC, 0);
@@ -1880,21 +1679,10 @@ void executarTesteConfiguravel(const TestConfig& config) {
     // Aguarda um pouco antes de enviar o status final
     delay(500);  // Aumentado para dar tempo para a conexão se estabilizar
 
-    DEBUG_PRINTLN("Enviando test_complete para finalizar teste...");
-
     StaticJsonDocument<200> completeDoc;
     completeDoc["status"] = "test_complete";
     completeDoc["message"] = "Teste finalizado com sucesso";
-
-    // Envia como mensagem crítica com ACK
-    if (sendCriticalMessage(completeDoc)) {
-        DEBUG_PRINTLN("test_complete enviado com sucesso");
-    } else {
-        DEBUG_PRINTLN(
-            "Falha ao enviar test_complete - conexão pode estar instável");
-    }
-
-    DEBUG_PRINTLN("=== TESTE FINALIZADO ===\n");
+    sendJsonResponse(completeDoc);
 
     // Retorna ao estado idle
     currentDeviceState = DEVICE_IDLE;
@@ -1907,21 +1695,15 @@ void executarTesteConfiguravel(const TestConfig& config) {
 // =================================================================
 
 void handleCommand(const JsonDocument& doc) {
-    DEBUG_PRINTLN("=== COMANDO RECEBIDO ===");
-
     // Verifica se é um ACK
     if (doc.containsKey("type") && doc["type"] == "ack") {
         String messageId = doc["messageId"];
-        DEBUG_PRINT("ACK recebido para mensagem: ");
-        DEBUG_PRINTLN(messageId);
-
         // Processa ACK
         if (awaitingAck && strcmp(currentMessageId, messageId.c_str()) == 0) {
             awaitingAck = false;
             commState = COMM_IDLE;
             updateAdaptiveInterval(true);
             resumeHeartbeat();
-            DEBUG_PRINTLN("ACK confirmado - comunicação bem-sucedida");
         } else {
             DEBUG_PRINT("ACK inválido ou não esperado: ");
             DEBUG_PRINTLN(messageId);
@@ -1936,27 +1718,17 @@ void handleCommand(const JsonDocument& doc) {
     if (requiresAck && !messageId.isEmpty()) {
         // Envia ACK imediatamente
         sendAck(messageId.c_str());
-        DEBUG_PRINT("ACK enviado para mensagem: ");
-        DEBUG_PRINTLN(messageId);
     }
 
     const char* comando = doc["comando"];
-    DEBUG_PRINT("Comando: ");
-    DEBUG_PRINTLN(comando);
-
     if (strcmp(comando, "calibrar") == 0) {
-        DEBUG_PRINTLN("Iniciando calibração...");
-        pauseHeartbeat(60000);  // Pausa por 1 minuto durante calibração
+        pauseHeartbeat(30000);  // Pausa por 30 segundos calibração
         calibrate();
 
     } else if (strcmp(comando, "iniciar_teste") == 0) {
-        DEBUG_PRINTLN("=== PROCESSANDO COMANDO INICIAR_TESTE ===");
-
         // Envia ACK antes de iniciar o processo longo
         if (requiresAck && !messageId.isEmpty()) {
             sendAck(messageId.c_str());
-            DEBUG_PRINT("ACK enviado para iniciar_teste: ");
-            DEBUG_PRINTLN(messageId);
         }
 
         // Atualiza estado do dispositivo
@@ -1975,22 +1747,11 @@ void handleCommand(const JsonDocument& doc) {
         config.quantidadeContatos = doc["quantidadeContatos"];
         config.calibracao = doc["calibracao"].as<JsonArrayConst>();
 
-        DEBUG_PRINTLN("Configuração do teste:");
-        DEBUG_PRINT("- Tipo de Acionamento: ");
-        DEBUG_PRINTLN(config.tipoAcionamento);
-        DEBUG_PRINT("- Quantidade de Contatos: ");
-        DEBUG_PRINTLN(config.quantidadeContatos);
-        DEBUG_PRINT("- Tamanho array calibração: ");
-        DEBUG_PRINTLN(config.calibracao.size());
-
         if (config.calibracao.size() > 0) {
             res_cal = config.calibracao[0].as<float>();
             char res_cal_str[32];
             snprintf(res_cal_str, sizeof(res_cal_str), "%.6f", res_cal);
-            DEBUG_PRINT("Valor de calibração carregado: ");
-            DEBUG_PRINTLN(res_cal_str);
         } else {
-            DEBUG_PRINTLN("ERRO: Nenhum valor de calibração encontrado!");
             sendError("Erro: Dados de calibração não encontrados");
             return;
         }
@@ -2007,9 +1768,6 @@ void handleCommand(const JsonDocument& doc) {
 
     } else if (strcmp(comando, "heartbeat_pause") == 0) {
         int duration = doc["duration"] | 10000;  // Default 10 segundos
-        DEBUG_PRINT("Pausando heartbeat por: ");
-        DEBUG_PRINT(duration);
-        DEBUG_PRINTLN("ms");
         pauseHeartbeat(duration);
 
     } else if (strcmp(comando, "heartbeat_resume") == 0) {
@@ -2075,10 +1833,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
         // Reset flags de controle
         g_aguardandoConfirmacao = false;
         g_comandoRecebidoFlag = false;
-
-        DEBUG_PRINTLN("Conexão BLE estabelecida com parâmetros otimizados");
-        DEBUG_PRINT("Total de reconexões: ");
-        DEBUG_PRINTLN(totalReconnections);
     }
 
     void onDisconnect(BLEServer* pServer) {
@@ -2111,8 +1865,6 @@ void setup() {
 #if DEBUG_ENABLED
     Serial.begin(9600);
 #endif
-
-    DEBUG_PRINTLN("=== JIGA DE TESTE DE RELÉS - VERSÃO FINAL ===");
 
     // Inicializa I2C e ADS1115
     Wire.begin();
@@ -2167,30 +1919,24 @@ void setup() {
     pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
 
-    // Configurações de advertising otimizadas para estabilidade
-    pAdvertising->setMinPreferred(
-        0x18);  // 30ms - intervalo mínimo mais conservador para estabilidade
-    pAdvertising->setMaxPreferred(
-        0x28);  // 50ms - intervalo máximo mais conservador para estabilidade
+    // Define os intervalos de CONEXÃO preferenciais (para estabilidade
+    // pós-conexão) O dispositivo irá solicitar à interface para se comunicarem
+    // a cada 40-80ms.
+    pAdvertising->setMinPreferred(0x20);  // 40ms
+    pAdvertising->setMaxPreferred(0x40);  // 80ms
+
     pAdvertising->setAdvertisementType(ADV_TYPE_IND);
 
-    // Intervalos de advertising para descoberta rápida
-    pAdvertising->setMinInterval(0x20);  // 32ms - padrão
-    pAdvertising->setMaxInterval(
-        0x20);  // 32ms - mesmo valor para descoberta consistente
+    // Define os intervalos de ADVERTISING (para descoberta antes da conexão)
+    // O dispositivo irá se anunciar a cada 20-30ms.
+    pAdvertising->setMinInterval(0x20);  // 20ms
+    pAdvertising->setMaxInterval(0x30);  // 30ms
 
     BLEDevice::startAdvertising();
 
-    DEBUG_PRINTLN(
-        "Dispositivo BLE iniciado com configurações otimizadas - Aguardando "
-        "conexão...");
-    DEBUG_PRINTLN("Nome: Jiga-Teste-Reles");
-    DEBUG_PRINTLN("UUID do Serviço: " + String(BLE_SERVICE_UUID));
     if (ADS.isConnected()) {
-        DEBUG_PRINTLN("ADS1115 conectado com sucesso");
         state_RGB('O');  // Azul - pronto para conectar
     } else {
-        DEBUG_PRINTLN("ERRO: ADS1115 não encontrado!");
         state_RGB('R');  // Vermelho - erro
     }
 }
