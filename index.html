@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="pt-br">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>TCC SENAI</title>
+        <link rel="stylesheet" href="style.css" />
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛠️</text></svg>"
+        />
+    </head>
+
+    <body>
+        <div class="container">
+            <header>
+                <div class="header-left">
+                    <h1>Ainda Sem Nome :(</h1>
+                    <div class="status-indicator">
+                        <div
+                            id="status-circle"
+                            class="circle disconnected"
+                        ></div>
+                        <span id="status-text">Desconectado</span>
+                    </div>
+                </div>
+                <div class="header-right">
+                    <div class="theme-switcher">
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="20"
+                            height="20"
+                            fill="currentColor"
+                            viewBox="0 0 256 256"
+                        >
+                            <path
+                                d="M120,40V24a8,8,0,0,1,16,0V40a8,8,0,0,1-16,0Zm8,200V216a8,8,0,0,0-16,0v16a8,8,0,0,0,16,0Zm80-104H224a8,8,0,0,0,0-16H208a8,8,0,0,0,0,16Zm-58.23,73.77a8,8,0,0,0,5.66-2.34l11.31-11.32a8,8,0,0,0-11.31-11.31L144,179.66a8,8,0,0,0,5.65,13.66ZM195.66,60.34a8,8,0,0,0-11.32,0L173,71.66a8,8,0,0,0,11.31,11.31l11.32-11.31A8,8,0,0,0,195.66,60.34ZM60.34,195.66a8,8,0,0,0,0-11.32L49,173a8,8,0,0,0-11.31,11.31l11.32,11.31A8,8,0,0,0,60.34,195.66ZM48,136H32a8,8,0,0,0,0,16H48a8,8,0,0,0,0-16Zm33.66-64.34L70.34,60.34a8,8,0,0,0-11.32,11.32L70.34,83a8,8,0,0,0,11.32-11.32ZM128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"
+                            ></path>
+                        </svg>
+                        <label class="switch">
+                            <input type="checkbox" id="theme-toggle-checkbox" />
+                            <span class="slider"></span>
+                        </label>
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="20"
+                            height="20"
+                            fill="currentColor"
+                            viewBox="0 0 256 256"
+                        >
+                            <path
+                                d="M224.23,145.77a95.84,95.84,0,0,1-57-21.45,64,64,0,0,0-82.42,82.42,95.84,95.84,0,0,1,21.45,57,8,8,0,0,0,15.86.14,80.13,80.13,0,0,0,102-102,8,8,0,0,0-.14-15.86A95.42,95.42,0,0,1,224.23,145.77ZM176,128a48,48,0,1,1-48-48A48.05,48.05,0,0,1,176,128Z"
+                            ></path>
+                        </svg>
+                    </div>
+                    <button id="connect-button" class="btn btn-primary">
+                        Conectar
+                    </button>
+                </div>
+            </header>
+
+            <main id="app-content" class="hidden">
+                <div id="module-selection-screen">
+                    <h2>Selecione um Módulo de Teste</h2>
+                    <div id="module-list" class="module-list-container"></div>
+                    <button
+                        id="add-new-module-button"
+                        class="btn btn-secondary"
+                    >
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="16"
+                            height="16"
+                            fill="currentColor"
+                            viewBox="0 0 256 256"
+                        >
+                            <path
+                                d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"
+                            ></path>
+                        </svg>
+                        Adicionar Novo Módulo
+                    </button>
+                </div>
+
+                <div id="module-form-screen" class="hidden">
+                    <h2 id="form-title">Adicionar Novo Módulo</h2>
+                    <form id="module-form" class="form-container">
+                        <input type="hidden" id="module-id" />
+                        <div class="form-group">
+                            <label for="module-name">Nome do Módulo</label>
+                            <input
+                                type="text"
+                                id="module-name"
+                                required
+                                placeholder="Ex: Módulo para SRA-12VDC-CL"
+                            />
+                        </div>
+                        <div class="form-group">
+                            <label for="module-actuation-type"
+                                >Tipo de Relé a Testar</label
+                            >
+                            <select id="module-actuation-type" required>
+                                <option value="" disabled selected>
+                                    Selecione o acionamento...
+                                </option>
+                                <option value="TIPO_DC">
+                                    Relé DC (Tensão Contínua)
+                                </option>
+                                <option value="TIPO_AC">
+                                    Relé AC (Tensão Alternada)
+                                </option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="module-terminals"
+                                >Quantidade de Contatos a Testar (NF + NA)</label
+                            >
+                            <input
+                                type="number"
+                                id="module-terminals"
+                                required
+                                min="1"
+                                max="8"
+                                value="1"
+                            />
+                            <p class="form-hint">
+                                Ex: Relé 5V de 5 terminais possui 2 contatos a testar,
+                                1 NF e 1 NA. Insira '2'.
+                            </p>
+                        </div>
+                        <div class="form-actions">
+                            <button
+                                type="button"
+                                id="cancel-form-button"
+                                class="btn btn-secondary"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                type="submit"
+                                id="save-module-button"
+                                class="btn btn-primary"
+                            >
+                                Salvar Módulo
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="module-management-screen" class="hidden">
+                    <button id="back-to-selection-button" class="btn-back">
+                        ← Voltar para seleção
+                    </button>
+                    <h2 id="management-title">Gerenciar Módulo</h2>
+                    <div class="card management-card">
+                        <p>
+                            <strong>Tipo de Acionamento:</strong>
+                            <span id="manage-relay-type"></span>
+                        </p>
+                        <p>
+                            <strong>Contatos a Testar:</strong>
+                            <span id="manage-terminals"></span>
+                        </p>
+                        <p>
+                            <strong>Última Calibração:</strong>
+                            <span id="manage-calibration-date"></span>
+                        </p>
+                        <p>
+                            <strong>Valor de Calibração:</strong>
+                            <span id="manage-calibration-value"></span>
+                        </p>
+                        <div class="management-actions">
+                            <button id="calibrate-module-button" class="btn">
+                                Calibrar
+                            </button>
+                            <button
+                                id="start-test-button"
+                                class="btn btn-primary"
+                            >
+                                Iniciar Teste
+                            </button>
+                            <button id="manage-view-history-button" class="btn">
+                                Ver Histórico
+                            </button>
+                            <button
+                                id="edit-module-button"
+                                class="btn btn-secondary"
+                            >
+                                Editar
+                            </button>
+                            <button
+                                id="delete-module-button"
+                                class="btn btn-danger"
+                            >
+                                Excluir
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="progress-screen" class="hidden">
+                    <h2 id="progress-title">Executando...</h2>
+
+                    <div id="test-indicators-container" class="hidden"></div>
+
+                    <div id="progress-status-text">
+                        Aguardando início do processo...
+                    </div>
+                    <div
+                        id="test-result-actions"
+                        class="management-actions hidden"
+                        style="margin-top: 2rem"
+                    >
+                        <button
+                            id="home-button-after-test"
+                            class="btn btn-secondary"
+                        >
+                            Voltar
+                        </button>
+                        <button
+                            id="view-history-button"
+                            class="btn btn-primary"
+                        >
+                            Ver Histórico
+                        </button>
+                    </div>
+                </div>
+
+                <div id="history-screen" class="hidden">
+                    <button id="back-to-management-button" class="btn-back">
+                        ← Voltar para o Módulo
+                    </button>
+                    <h2 id="history-title">Histórico de Testes</h2>
+                    <div id="history-list-container"></div>
+                </div>
+            </main>
+
+            <div id="welcome-message">
+                <p>Por favor, conecte-se ao dispositivo ESP32 para começar.</p>
+            </div>
+
+            <div id="global-alert" class="alert-overlay hidden">
+                <div class="alert-box">
+                    <div id="alert-icon"></div>
+                    <p id="alert-message"></p>
+                    <div id="alert-actions" class="alert-actions"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Desenvolvido por Lowell Fazzion e Anderson Ferreira © 2025</p>
+        </footer>
+
+        <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+        <script src="script.js"></script>
+    </body>
+</html>
