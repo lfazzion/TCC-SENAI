@@ -85,6 +85,209 @@ volatile bool g_comandoRecebidoFlag = false;
 volatile bool g_aguardandoConfirmacao = false;
 char g_comandoJson[BUFFER_SIZE_COMANDO];
 
+// --- Funções Auxiliares para Estatística ---
+/**
+ * @brief Ordena um array de floats em ordem crescente (bubble sort
+ * simplificado)
+ * @param arr Array a ser ordenado
+ * @param n Tamanho do array
+ */
+void ordenarArray(float arr[], int n) {
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = 0; j < n - i - 1; j++) {
+            if (arr[j] > arr[j + 1]) {
+                float temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Calcula a média aparada (trimmed mean) de um array
+ * @param valores Array de valores
+ * @param n Número de valores
+ * @param percentual_descarte Percentual de valores a descartar (ex: 0.1 para
+ * 10%)
+ * @return Média aparada
+ */
+float calcularMediaAparada(float valores[], int n, float percentual_descarte) {
+    if (n < 3) {
+        // Para arrays muito pequenos, usa média simples
+        float soma = 0.0;
+        for (int i = 0; i < n; i++) {
+            soma += valores[i];
+        }
+        return soma / n;
+    }
+
+    // Cria uma cópia do array para não modificar o original
+    // Usa buffer estático para evitar problemas com arrays de tamanho variável
+    const int MAX_AMOSTRAS = 50;  // Limite máximo de amostras
+    float valoresOrdenados[MAX_AMOSTRAS];
+
+    // Limita o número de valores ao tamanho do buffer
+    int valores_efetivos = (n > MAX_AMOSTRAS) ? MAX_AMOSTRAS : n;
+
+    for (int i = 0; i < valores_efetivos; i++) {
+        valoresOrdenados[i] = valores[i];
+    }
+
+    // Ordena os valores
+    ordenarArray(valoresOrdenados, valores_efetivos);
+
+    // Calcula quantos valores descartar de cada extremo
+    int valores_descarte = (int)(valores_efetivos * percentual_descarte);
+    if (valores_descarte < 1)
+        valores_descarte = 1;
+
+    // Garante que sobrem pelo menos 2 valores
+    if (valores_descarte * 2 >= valores_efetivos) {
+        valores_descarte = (valores_efetivos - 2) / 2;
+    }
+
+    // Calcula a média dos valores centrais
+    float soma = 0.0;
+    int inicio = valores_descarte;
+    int fim = valores_efetivos - valores_descarte;
+    int valores_usados = fim - inicio;
+
+    for (int i = inicio; i < fim; i++) {
+        soma += valoresOrdenados[i];
+    }
+
+    DEBUG_PRINT("Média aparada: descartados ");
+    DEBUG_PRINT(valores_descarte);
+    DEBUG_PRINT(" valores de cada extremo, usando ");
+    DEBUG_PRINT(valores_usados);
+    DEBUG_PRINT(" valores centrais");
+
+    return soma / valores_usados;
+}
+
+/**
+ * @brief Versão otimizada da função get_res() para calibração com máxima
+ * precisão Usa taxa de amostragem mais baixa (16 SPS) para melhor rejeição de
+ * ruído
+ * @return Valor de resistência em ohms ou -1.0 em caso de erro
+ */
+float get_res_calibracao() {
+    if (!ADS.isConnected()) {
+        DEBUG_PRINTLN("get_res_calibracao: ADS1115 não conectado");
+        return -1.0;
+    }
+
+    // Configuração para máxima precisão (16 SPS para melhor rejeição de ruído)
+    ADS.setDataRate(0);  // 0 = 8 SPS, 1 = 16 SPS (mais precisão)
+    ADS.setGain(1);      // Reconfirma o ganho
+
+    // Aguarda estabilização após mudança de configuração
+    delay(100);
+
+    // Teste rápido para detecção de circuito aberto
+    delay(50);  // Delay maior para estabilização
+    int16_t test_val_01 = ADS.readADC_Differential_0_1();
+    delay(50);  // Delay maior entre leituras
+    int16_t test_val_13 = ADS.readADC_Differential_1_3();
+
+    float test_volts_ref = ADS.toVoltage(test_val_01);
+    float test_volts = ADS.toVoltage(test_val_13);
+
+    DEBUG_PRINT("get_res_calibracao: teste rápido - volts_ref=");
+    DEBUG_PRINT(test_volts_ref);
+    DEBUG_PRINT("V, volts=");
+    DEBUG_PRINT(test_volts);
+    DEBUG_PRINTLN("V");
+
+    // Detecção de circuito aberto
+    if (abs(test_volts_ref) < 0.001 && abs(test_volts) < 0.001) {
+        DEBUG_PRINTLN("get_res_calibracao: circuito aberto detectado");
+        return 10000.0;
+    }
+
+    if (abs(test_volts_ref) < 0.0001 && abs(test_volts) > 0.01) {
+        DEBUG_PRINTLN(
+            "get_res_calibracao: volts_ref muito pequeno - circuito aberto");
+        return 10000.0;
+    }
+
+    // Aumenta o número de leituras para calibração (mais precisão)
+    const int NUM_LEITURAS = 10;
+    float soma = 0.0;
+    int leituras_validas = 0;
+
+    for (int i = 0; i < NUM_LEITURAS; i++) {
+        delay(100);  // Delay maior entre leituras para estabilização
+
+        int16_t val_01 = ADS.readADC_Differential_0_1();
+        delay(20);  // Delay entre canais
+        int16_t val_13 = ADS.readADC_Differential_1_3();
+
+        float volts_ref = ADS.toVoltage(val_01);
+        float volts = ADS.toVoltage(val_13);
+
+        // Validação rigorosa dos valores
+        if (isnan(volts_ref) || isnan(volts) || isinf(volts_ref) ||
+            isinf(volts)) {
+            DEBUG_PRINT("get_res_calibracao: valor inválido na leitura ");
+            DEBUG_PRINTLN(i + 1);
+            continue;
+        }
+
+        // Detecção de problemas de leitura
+        if (abs(volts_ref) < 0.00001 || abs(volts) < 0.0001) {
+            DEBUG_PRINT("get_res_calibracao: tensão muito baixa na leitura ");
+            DEBUG_PRINTLN(i + 1);
+            return 10000.0;
+        }
+
+        float resistencia = (res_ref * volts) / volts_ref;
+
+        // Validação do resultado
+        if (isnan(resistencia) || isinf(resistencia)) {
+            DEBUG_PRINT("get_res_calibracao: resistência inválida na leitura ");
+            DEBUG_PRINTLN(i + 1);
+            continue;
+        }
+
+        if (resistencia > 50000.0 || resistencia < -1000.0) {
+            DEBUG_PRINT(
+                "get_res_calibracao: resistência fora da faixa na leitura ");
+            DEBUG_PRINTLN(i + 1);
+            continue;
+        }
+
+        DEBUG_PRINT("get_res_calibracao: leitura #");
+        DEBUG_PRINT(i + 1);
+        DEBUG_PRINT(" -> ");
+        DEBUG_PRINT(resistencia);
+        DEBUG_PRINTLN(" Ω");
+
+        soma += resistencia;
+        leituras_validas++;
+    }
+
+    // Restaura configuração original do ADC
+    ADS.setDataRate(3);  // Volta para 128 SPS
+
+    if (leituras_validas < NUM_LEITURAS / 2) {
+        DEBUG_PRINT("get_res_calibracao: leituras insuficientes: ");
+        DEBUG_PRINTLN(leituras_validas);
+        return -1.0;
+    }
+
+    float media = soma / leituras_validas;
+    DEBUG_PRINT("get_res_calibracao: média final = ");
+    DEBUG_PRINT(media);
+    DEBUG_PRINT(" Ω (");
+    DEBUG_PRINT(leituras_validas);
+    DEBUG_PRINT(" leituras válidas)");
+    DEBUG_PRINTLN();
+
+    return media;
+}
+
 // Variáveis para estabilidade da conexão
 unsigned long lastHeartbeat = 0;
 const unsigned long HEARTBEAT_INTERVAL =
@@ -167,6 +370,10 @@ struct TestConfig {
     int quantidadeContatos;    // Número total de contatos a testar (NF + NA)
     JsonArrayConst calibracao;
 };
+
+// Declarações forward das funções que usam TestConfig
+void executarTesteEspecialUmContato(const TestConfig& config);
+void executarTesteConfiguravel(const TestConfig& config);
 
 // =================================================================
 // FUNÇÕES AUXILIARES PARA CONVERSÃO DE DADOS
@@ -793,7 +1000,7 @@ void aguardarConfirmacaoWebApp() {
 // =================================================================
 
 void calibrate() {
-    DEBUG_PRINTLN("=== INICIANDO CALIBRAÇÃO ===");
+    DEBUG_PRINTLN("=== INICIANDO CALIBRAÇÃO COM MÚLTIPLAS VERIFICAÇÕES ===");
 
     // Atualiza estado do dispositivo
     currentDeviceState = DEVICE_CALIBRATING;
@@ -804,7 +1011,7 @@ void calibrate() {
     // Envia status inicial
     StaticJsonDocument<200> statusDoc;
     statusDoc["status"] = "calibration_init";
-    statusDoc["message"] = "Iniciando calibração...";
+    statusDoc["message"] = "Iniciando calibração aprimorada...";
     sendJsonResponse(statusDoc);
 
     aguardarBotaoJiga(
@@ -814,41 +1021,156 @@ void calibrate() {
     if (!deviceConnected)
         return;
 
-    // Verifica se a conexão ainda está ativa antes de prosseguir
+    // Verifica conexão
     if (!checkConnection()) {
         DEBUG_PRINTLN("Conexão perdida durante calibração");
         return;
     }
 
+    // Número de verificações de calibração
+    const int NUM_VERIFICACOES = 4;
+    const float TOLERANCIA_VARIACAO =
+        0.05;  // 5% de variação máxima entre medições
+
+    float medicoes_cal[NUM_VERIFICACOES];
+    int medicoes_validas = 0;
+
     // Envia status de processamento
     statusDoc["status"] = "calibration_processing";
-    statusDoc["message"] = "Realizando medições de calibração...";
+    statusDoc["message"] = "Realizando múltiplas verificações de calibração...";
     sendJsonResponse(statusDoc);
 
     state_RGB('R');  // Vermelho - processando
+    delay(500);      // Aguarda estabilização
 
-    // Aguarda estabilização antes de iniciar calibração
-    delay(500);
+    DEBUG_PRINT("Realizando ");
+    DEBUG_PRINT(NUM_VERIFICACOES);
+    DEBUG_PRINTLN(" verificações de calibração...");
 
-    // Usa a função melhorada de medição para calibração
-    float medição_cal = medirResistencia();
+    // Realiza múltiplas verificações de calibração
+    for (int i = 0; i < NUM_VERIFICACOES; i++) {
+        DEBUG_PRINT("Verificação ");
+        DEBUG_PRINT(i + 1);
+        DEBUG_PRINT("/");
+        DEBUG_PRINT(NUM_VERIFICACOES);
+        DEBUG_PRINTLN(":");
 
-    if (medição_cal == -1.0) {
+        // Aguarda entre verificações para garantir estabilidade
+        if (i > 0) {
+            delay(1000);
+        }
+
+        // Usa a função de medição otimizada para calibração
+        float medicao = get_res_calibracao();
+
+        if (medicao == -1.0) {
+            DEBUG_PRINT("Falha na verificação ");
+            DEBUG_PRINT(i + 1);
+            DEBUG_PRINTLN(" - ignorando");
+            continue;
+        }
+
+        // Verifica se a medição está dentro de uma faixa razoável para
+        // calibração
+        if (medicao >
+            100.0) {  // Muito alta para uma calibração (curto-circuito)
+            DEBUG_PRINT("Verificação ");
+            DEBUG_PRINT(i + 1);
+            DEBUG_PRINT(" rejeitada - valor muito alto: ");
+            DEBUG_PRINT(medicao);
+            DEBUG_PRINTLN(" Ω");
+            continue;
+        }
+
+        medicoes_cal[medicoes_validas] = medicao;
+        medicoes_validas++;
+
+        DEBUG_PRINT("Verificação ");
+        DEBUG_PRINT(i + 1);
+        DEBUG_PRINT(" válida: ");
+        DEBUG_PRINT(medicao);
+        DEBUG_PRINTLN(" Ω");
+
+        // Feedback visual
+        digitalWrite(LED_CONT, !digitalRead(LED_CONT));
+    }
+
+    // Verifica se obtivemos medições suficientes
+    if (medicoes_validas < 2) {
         state_RGB('R');  // Vermelho - erro
 
         StaticJsonDocument<200> errorDoc;
         errorDoc["status"] = "calibration_error";
         errorDoc["message"] =
-            "Falha na calibração - verifique se os fios estão conectados em "
-            "curto-circuito";
+            "Falha na calibração - medições insuficientes. Verifique o "
+            "curto-circuito.";
         sendJsonResponse(errorDoc);
+
+        DEBUG_PRINT("Erro: apenas ");
+        DEBUG_PRINT(medicoes_validas);
+        DEBUG_PRINTLN(" medições válidas");
 
         delay(2000);
         reset_output();
         return;
     }
 
-    res_cal = medição_cal;
+    // Calcula estatísticas das medições
+    float soma = 0.0;
+    float valor_min = medicoes_cal[0];
+    float valor_max = medicoes_cal[0];
+
+    for (int i = 0; i < medicoes_validas; i++) {
+        soma += medicoes_cal[i];
+        if (medicoes_cal[i] < valor_min)
+            valor_min = medicoes_cal[i];
+        if (medicoes_cal[i] > valor_max)
+            valor_max = medicoes_cal[i];
+    }
+
+    float media = soma / medicoes_validas;
+    float variacao = (valor_max - valor_min) / media;
+
+    DEBUG_PRINT("Estatísticas da calibração: média=");
+    DEBUG_PRINT(media);
+    DEBUG_PRINT(" Ω, min=");
+    DEBUG_PRINT(valor_min);
+    DEBUG_PRINT(" Ω, max=");
+    DEBUG_PRINT(valor_max);
+    DEBUG_PRINT(" Ω, variação=");
+    DEBUG_PRINT(variacao * 100);
+    DEBUG_PRINTLN("%");
+
+    // Verifica se a variação entre medições é aceitável
+    if (variacao > TOLERANCIA_VARIACAO) {
+        state_RGB('R');  // Vermelho - erro
+
+        StaticJsonDocument<200> errorDoc;
+        errorDoc["status"] = "calibration_warning";
+        errorDoc["message"] =
+            "Variação alta entre medições. Verifique a estabilidade do "
+            "contato.";
+        sendJsonResponse(errorDoc);
+
+        DEBUG_PRINT("Aviso: variação alta entre medições: ");
+        DEBUG_PRINT(variacao * 100);
+        DEBUG_PRINT("% (limite: ");
+        DEBUG_PRINT(TOLERANCIA_VARIACAO * 100);
+        DEBUG_PRINTLN("%)");
+
+        // Prossegue com a calibração mas com aviso
+        delay(2000);
+    }
+
+    // Aplica média aparada nas medições de calibração se tiver amostras
+    // suficientes
+    if (medicoes_validas >= 3) {
+        res_cal = calcularMediaAparada(medicoes_cal, medicoes_validas, 0.1);
+        DEBUG_PRINTLN("Calibração usando média aparada");
+    } else {
+        res_cal = media;
+        DEBUG_PRINTLN("Calibração usando média simples");
+    }
 
     // Validação final do resultado
     if (isnan(res_cal) || isinf(res_cal)) {
@@ -866,18 +1188,24 @@ void calibrate() {
 
     state_RGB('B');  // Verde - sucesso
 
-    // Usar snprintf para conversão de float para char array
     char res_cal_str[32];
     snprintf(res_cal_str, sizeof(res_cal_str), "%.6f", res_cal);
 
     DEBUG_PRINT("Calibração concluída: ");
     DEBUG_PRINT(res_cal_str);
-    DEBUG_PRINTLN(" Ω");
+    DEBUG_PRINT(" Ω (");
+    DEBUG_PRINT(medicoes_validas);
+    DEBUG_PRINT(" verificações, variação: ");
+    DEBUG_PRINT(variacao * 100);
+    DEBUG_PRINT("%)");
+    DEBUG_PRINTLN();
 
     // Envia resultado da calibração
     StaticJsonDocument<200> calDoc;
     calDoc["status"] = "calibration_complete";
     calDoc["valor"] = res_cal;
+    calDoc["verificacoes"] = medicoes_validas;
+    calDoc["variacao_percentual"] = variacao * 100;
     calDoc["message"] = "Calibração concluída com sucesso!";
     sendJsonResponse(calDoc);
 
@@ -893,10 +1221,10 @@ void calibrate() {
 float medirResistencia() {
     state_RGB('R');  // Vermelho - medindo
 
-    DEBUG_PRINTLN("=== Iniciando medição de resistência ===");
+    DEBUG_PRINTLN("=== Iniciando medição de resistência com média aparada ===");
 
     // Aguarda estabilização após mudança de estado do relé
-    delay(100);  // Tempo para estabilização
+    delay(100);
 
     // Teste rápido para detecção imediata de circuito aberto
     DEBUG_PRINTLN("Fazendo teste rápido para detectar circuito aberto...");
@@ -904,85 +1232,94 @@ float medirResistencia() {
 
     if (teste_rapido >= 5000.0) {
         DEBUG_PRINTLN("Circuito aberto detectado no teste rápido!");
-        digitalWrite(LED_CONT, 0);  // Desliga LED
-        state_RGB('B');             // Verde - medição concluída
+        digitalWrite(LED_CONT, 0);
+        state_RGB('B');
         delay(300);
         reset_output();
-        return teste_rapido;  // Retorna valor alto indicando circuito aberto
+        return teste_rapido;
     }
 
-    // Algoritmo simplificado para evitar travamentos
-    float soma = 0.0;
+    // Coleta as amostras para aplicar média aparada
+    float amostras[MEAN];
     int leituras_validas = 0;
-    int tentativas_max = MEAN * 2;  // Reduzido para evitar loops longos
+    int tentativas_max = MEAN * 3;  // Permite mais tentativas
     int tentativas = 0;
 
-    // Coleta leituras básicas
+    DEBUG_PRINT("Coletando ");
+    DEBUG_PRINT(MEAN);
+    DEBUG_PRINTLN(" amostras para média aparada...");
+
+    // Coleta as amostras
     while (leituras_validas < MEAN && tentativas < tentativas_max) {
         float leitura = get_res();
         tentativas++;
 
-        if (leitura >= 0.0) {  // Leitura válida
-            // Se a leitura indica circuito aberto (>= 5000 Ω), consideramos
-            // válida mas interrompemos a coleta para economizar tempo
+        if (leitura >= 0.0) {
+            // Detecção de circuito aberto durante a coleta
             if (leitura >= 5000.0) {
                 DEBUG_PRINTLN(
                     "Circuito aberto detectado - interrompendo coleta");
-                digitalWrite(LED_CONT, 0);  // Desliga LED
-                state_RGB('B');             // Verde - medição concluída
+                digitalWrite(LED_CONT, 0);
+                state_RGB('B');
                 delay(300);
                 reset_output();
-                return leitura;  // Retorna o valor alto diretamente
+                return leitura;
             }
 
-            soma += leitura;
+            amostras[leituras_validas] = leitura;
             leituras_validas++;
 
-            // Feedback visual simples
+            // Feedback visual
             if (leituras_validas % 5 == 0) {
-                digitalWrite(LED_CONT, !digitalRead(LED_CONT));  // Toggle LED
+                digitalWrite(LED_CONT, !digitalRead(LED_CONT));
             }
         }
 
-        delay(10);  // Delay para estabilização
+        delay(10);
 
-        // Watchdog simples para evitar travamentos
+        // Watchdog para evitar travamentos
         if (tentativas > 0 && tentativas % 10 == 0) {
             DEBUG_PRINT("Progresso: ");
             DEBUG_PRINT(leituras_validas);
             DEBUG_PRINT("/");
-            DEBUG_PRINTLN(MEAN);
+            DEBUG_PRINT(MEAN);
+            DEBUG_PRINT(" (tentativas: ");
+            DEBUG_PRINT(tentativas);
+            DEBUG_PRINTLN(")");
         }
     }
 
-    // Critério flexível: precisa de pelo menos 60% das leituras
-    int minimo_leituras = (MEAN * 6) / 10;  // 60% de 20 = 12 leituras
+    // Verifica se coletou amostras suficientes
+    int minimo_leituras = (MEAN * 6) / 10;  // 60% das amostras
     if (leituras_validas < minimo_leituras) {
-        digitalWrite(LED_CONT, 0);  // Desliga LED
-        state_RGB('R');             // Vermelho - erro
+        digitalWrite(LED_CONT, 0);
+        state_RGB('R');
         delay(500);
         reset_output();
-        DEBUG_PRINT("Erro na medição: leituras válidas: ");
+        DEBUG_PRINT("Erro: leituras insuficientes: ");
         DEBUG_PRINT(leituras_validas);
         DEBUG_PRINT("/");
-        DEBUG_PRINT(tentativas);
+        DEBUG_PRINT(MEAN);
         DEBUG_PRINT(" (mínimo: ");
         DEBUG_PRINT(minimo_leituras);
         DEBUG_PRINTLN(")");
-        return -1.0;  // Retorna erro
+        return -1.0;
     }
 
-    // Cálculo simples da média
-    float resistencia_bruta = soma / leituras_validas;
+    // Aplica média aparada (descarta 10% dos valores extremos)
+    float resistencia_bruta =
+        calcularMediaAparada(amostras, leituras_validas, 0.1);
 
-    // Tratamento especial para circuitos abertos
-    // Se a resistência bruta é muito alta, provavelmente é um circuito aberto
-    // Neste caso, não devemos subtrair a calibração
+    DEBUG_PRINT("Resistência bruta (média aparada): ");
+    DEBUG_PRINT(resistencia_bruta);
+    DEBUG_PRINTLN(" Ω");
+
+    // Aplica calibração
     float resistencia;
     if (resistencia_bruta > 5000.0) {
-        // Circuito aberto detectado - não aplicar calibração
+        // Circuito aberto - não aplicar calibração
         resistencia = resistencia_bruta;
-        DEBUG_PRINT("Circuito aberto detectado - calibração não aplicada");
+        DEBUG_PRINTLN("Circuito aberto detectado - calibração não aplicada");
     } else {
         // Resistência normal - aplicar calibração
         resistencia = resistencia_bruta - res_cal;
@@ -996,23 +1333,21 @@ float medirResistencia() {
     DEBUG_PRINT(resistencia);
     DEBUG_PRINTLN(" Ω");
 
-    digitalWrite(LED_CONT, 0);  // Desliga LED
-    state_RGB('B');             // Verde - medição concluída
+    digitalWrite(LED_CONT, 0);
+    state_RGB('B');
     delay(300);
     reset_output();
 
-    DEBUG_PRINT("Medição concluída: ");
+    DEBUG_PRINT("Medição concluída com média aparada: ");
     DEBUG_PRINT(resistencia);
-    DEBUG_PRINT(" Ω (res_cal: ");
-    DEBUG_PRINT(res_cal);
-    DEBUG_PRINT(", leituras: ");
+    DEBUG_PRINT(" Ω (");
     DEBUG_PRINT(leituras_validas);
-    DEBUG_PRINT("/");
-    DEBUG_PRINT(tentativas);
-    DEBUG_PRINTLN(")");
+    DEBUG_PRINT(" amostras)");
+    DEBUG_PRINTLN();
 
     return resistencia;
-}  // =================================================================
+}
+// =================================================================
 // ROTINAS DE TESTE
 // =================================================================
 

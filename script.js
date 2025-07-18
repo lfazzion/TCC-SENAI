@@ -70,8 +70,6 @@ document.addEventListener("DOMContentLoaded", () => {
     // --- Estado da Aplicação ---
     let bleDevice = null;
     let sendCharacteristic = null;
-    let connectionRetryCount = 0;
-    let maxRetries = 3;
     let connectionTimeout = null;
     let heartbeatInterval = null;
     let reconnectInterval = null;
@@ -204,7 +202,6 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         
-        connectionRetryCount = 0;
         await attemptConnection();
     }
 
@@ -243,7 +240,6 @@ document.addEventListener("DOMContentLoaded", () => {
             notifyCharacteristic.addEventListener("characteristicvaluechanged", handleDataReceived);
             
             clearTimeout(connectionTimeout);
-            connectionRetryCount = 0;
             
             // Aguarda mais um pouco para garantir que tudo está funcionando
             await new Promise(resolve => setTimeout(resolve, 500));
@@ -276,23 +272,11 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             sendCharacteristic = null;
             
-            if (connectionRetryCount < maxRetries) {
-                connectionRetryCount++;
-                showGlobalAlert(
-                    `Tentativa ${connectionRetryCount} de ${maxRetries} falhada. Tentando novamente...`, 
-                    "warning"
-                );
-                
-                // Aguarda mais tempo antes de tentar novamente
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                return await attemptConnection();
-            } else {
-                showGlobalAlert(
-                    "Falha ao conectar após múltiplas tentativas. Verifique se o dispositivo está ligado e próximo.", 
-                    "error"
-                );
-                updateConnectionStatus("disconnected");
-            }
+            showGlobalAlert(
+                "Falha ao conectar. Verifique se o dispositivo está ligado e próximo.", 
+                "error"
+            );
+            updateConnectionStatus("disconnected");
         }
     }
 
