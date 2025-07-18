@@ -130,6 +130,21 @@ enum CommState {
 
 CommState commState = COMM_IDLE;
 
+// === CONTROLE DE ESTADO DO DISPOSITIVO ===
+enum DeviceState {
+    DEVICE_IDLE,
+    DEVICE_CALIBRATING,
+    DEVICE_TESTING,
+    DEVICE_WAITING_BUTTON,
+    DEVICE_ERROR
+};
+
+DeviceState currentDeviceState = DEVICE_IDLE;
+char currentModule[64] = {0};
+int currentTestStep = -1;
+unsigned long lastClientPing = 0;
+const unsigned long CLIENT_PING_TIMEOUT = 30000;  // 30 segundos
+
 // Controle de heartbeat inteligente
 bool heartbeatPaused = false;
 unsigned long heartbeatPauseUntil = 0;
@@ -466,17 +481,17 @@ bool sendJsonResponse(const JsonDocument& doc) {
     // Verifica se é uma mensagem crítica
     const char* status = doc["status"];
     bool isCritical =
-        status && (strcmp(status, "prompt") == 0 ||
-                   strcmp(status, "test_current") == 0 ||
-                   strcmp(status, "calibration_init") == 0 ||
-                   strcmp(status, "calibration_processing") == 0 ||
-                   strcmp(status, "test_init") == 0 ||
-                   strcmp(status, "test_starting") == 0 ||
-                   strcmp(status, "test_complete") == 0 ||
-                   strcmp(status, "button_pressed") == 0 ||
-                   strcmp(status, "error") == 0);
+        status &&
+        (strcmp(status, "prompt") == 0 || strcmp(status, "test_current") == 0 ||
+         strcmp(status, "calibration_init") == 0 ||
+         strcmp(status, "calibration_processing") == 0 ||
+         strcmp(status, "test_init") == 0 ||
+         strcmp(status, "test_starting") == 0 ||
+         strcmp(status, "test_complete") == 0 ||
+         strcmp(status, "button_pressed") == 0 || strcmp(status, "error") == 0);
 
-    // Verifica se pode enviar baseado no controle de fluxo (apenas para mensagens não-críticas)
+    // Verifica se pode enviar baseado no controle de fluxo (apenas para
+    // mensagens não-críticas)
     if (!isCritical && !canSendMessage()) {
         DEBUG_PRINTLN("Mensagem rejeitada - controle de fluxo");
         return false;
@@ -590,6 +605,48 @@ void sendHeartbeat() {
     }
 }
 
+void sendDeviceStatus() {
+    StaticJsonDocument<400> doc;
+    doc["status"] = "device_status";
+    doc["timestamp"] = millis();
+
+    // Mapeia o estado do dispositivo para string
+    const char* stateStr = "idle";
+    switch (currentDeviceState) {
+        case DEVICE_IDLE:
+            stateStr = "idle";
+            break;
+        case DEVICE_CALIBRATING:
+            stateStr = "calibrating";
+            break;
+        case DEVICE_TESTING:
+            stateStr = "testing";
+            break;
+        case DEVICE_WAITING_BUTTON:
+            stateStr = "waiting_for_button";
+            break;
+        case DEVICE_ERROR:
+            stateStr = "error";
+            break;
+    }
+
+    doc["currentState"] = stateStr;
+    doc["commState"] = commState;
+    doc["freeHeap"] = ESP.getFreeHeap();
+    doc["uptime"] = millis();
+
+    // Adiciona informações do teste atual se disponível
+    if (currentTestStep >= 0) {
+        doc["currentStep"] = currentTestStep;
+    }
+
+    if (strlen(currentModule) > 0) {
+        doc["currentModule"] = currentModule;
+    }
+
+    sendJsonResponse(doc);
+}
+
 bool checkConnection() {
     unsigned long currentTime = millis();
 
@@ -631,6 +688,9 @@ void aguardarBotaoJiga(const char* mensagem = "") {
     DEBUG_PRINT("Conectado: ");
     DEBUG_PRINTLN(deviceConnected ? "SIM" : "NÃO");
 
+    // Atualiza estado do dispositivo
+    currentDeviceState = DEVICE_WAITING_BUTTON;
+
     // Envia prompt para a WebApp usando função crítica
     StaticJsonDocument<300> promptDoc;
     promptDoc["status"] = "prompt";
@@ -651,7 +711,7 @@ void aguardarBotaoJiga(const char* mensagem = "") {
     // Acende LED indicativo
     digitalWrite(LED_CONT, 1);
     state_RGB('O');  // Azul - aguardando
-    
+
     DEBUG_PRINTLN("Aguardando pressionar botão físico...");
     DEBUG_PRINT("Estado inicial do botão: ");
     DEBUG_PRINTLN(digitalRead(BUTTON));
@@ -735,6 +795,12 @@ void aguardarConfirmacaoWebApp() {
 void calibrate() {
     DEBUG_PRINTLN("=== INICIANDO CALIBRAÇÃO ===");
 
+    // Atualiza estado do dispositivo
+    currentDeviceState = DEVICE_CALIBRATING;
+    currentTestStep = -1;
+    memset(currentModule, 0, sizeof(currentModule));
+    strcpy(currentModule, "calibration");
+
     // Envia status inicial
     StaticJsonDocument<200> statusDoc;
     statusDoc["status"] = "calibration_init";
@@ -817,6 +883,11 @@ void calibrate() {
 
     delay(1000);
     reset_output();
+
+    // Retorna ao estado idle
+    currentDeviceState = DEVICE_IDLE;
+    currentTestStep = -1;
+    memset(currentModule, 0, sizeof(currentModule));
 }
 
 float medirResistencia() {
@@ -979,6 +1050,9 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     testingDoc["state"] = "DESENERGIZADO";
     sendJsonResponse(testingDoc);
 
+    // Atualiza o passo atual do teste
+    currentTestStep = testeAtual;
+
     aguardarBotaoJiga(
         "TESTE Contato #1 - COM-N#: Relé DESENERGIZADO. Conecte o "
         "multímetro entre COM e o contato N# (NF ou NA) e pressione o botão");
@@ -1079,6 +1153,11 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     }
 
     DEBUG_PRINTLN("=== TESTE ESPECIAL FINALIZADO ===\n");
+
+    // Retorna ao estado idle
+    currentDeviceState = DEVICE_IDLE;
+    currentTestStep = -1;
+    memset(currentModule, 0, sizeof(currentModule));
 }
 
 /**
@@ -1105,6 +1184,11 @@ void executarTesteConfiguravel(const TestConfig& config) {
     DEBUG_PRINT("- Quantidade de Contatos: ");
     DEBUG_PRINTLN(config.quantidadeContatos);
     DEBUG_PRINTLN("==========================================================");
+
+    // Atualiza estado do dispositivo
+    currentDeviceState = DEVICE_TESTING;
+    currentTestStep = 0;
+    strcpy(currentModule, "testing");
 
     // Envia status inicial do teste
     StaticJsonDocument<200> statusDoc;
@@ -1476,6 +1560,11 @@ void executarTesteConfiguravel(const TestConfig& config) {
     }
 
     DEBUG_PRINTLN("=== TESTE FINALIZADO ===\n");
+
+    // Retorna ao estado idle
+    currentDeviceState = DEVICE_IDLE;
+    currentTestStep = -1;
+    memset(currentModule, 0, sizeof(currentModule));
 }
 
 // =================================================================
@@ -1527,6 +1616,18 @@ void handleCommand(const JsonDocument& doc) {
 
     } else if (strcmp(comando, "iniciar_teste") == 0) {
         DEBUG_PRINTLN("=== PROCESSANDO COMANDO INICIAR_TESTE ===");
+
+        // Envia ACK antes de iniciar o processo longo
+        if (requiresAck && !messageId.isEmpty()) {
+            sendAck(messageId.c_str());
+            DEBUG_PRINT("ACK enviado para iniciar_teste: ");
+            DEBUG_PRINTLN(messageId);
+        }
+
+        // Atualiza estado do dispositivo
+        currentDeviceState = DEVICE_TESTING;
+        currentTestStep = 0;
+
         pauseHeartbeat(30000);  // Pausa por 30 segundos durante teste
 
         TestConfig config;
@@ -1582,10 +1683,15 @@ void handleCommand(const JsonDocument& doc) {
 
     } else if (strcmp(comando, "ping") == 0) {
         DEBUG_PRINTLN("Ping recebido");
+        lastClientPing = millis();  // Registra timestamp do último ping
         StaticJsonDocument<200> response;
         response["status"] = "pong";
         response["timestamp"] = millis();
         sendJsonResponse(response);
+
+    } else if (strcmp(comando, "get_status") == 0) {
+        DEBUG_PRINTLN("Solicitação de status recebida");
+        sendDeviceStatus();
 
     } else {
         // Usa buffer temporário para evitar overflow
@@ -1728,9 +1834,9 @@ void setup() {
 
     // Configurações de advertising otimizadas para estabilidade
     pAdvertising->setMinPreferred(
-        0x06);  // 7.5ms - intervalo mínimo de conexão otimizado
+        0x18);  // 30ms - intervalo mínimo mais conservador para estabilidade
     pAdvertising->setMaxPreferred(
-        0x0C);  // 15ms - intervalo máximo de conexão otimizado
+        0x28);  // 50ms - intervalo máximo mais conservador para estabilidade
     pAdvertising->setAdvertisementType(ADV_TYPE_IND);
 
     // Intervalos de advertising para descoberta rápida
@@ -1772,6 +1878,26 @@ void loop() {
         commState = COMM_IDLE;
         updateAdaptiveInterval(false);  // Falha na comunicação
         resumeHeartbeat();
+    }
+
+    // Monitora timeout de ping do cliente
+    if (deviceConnected && lastClientPing > 0 &&
+        millis() - lastClientPing > CLIENT_PING_TIMEOUT) {
+        DEBUG_PRINTLN("Timeout de ping do cliente - cliente pode ter travado");
+
+        // Se estava em teste, para o teste e volta ao idle
+        if (currentDeviceState == DEVICE_TESTING ||
+            currentDeviceState == DEVICE_WAITING_BUTTON) {
+            DEBUG_PRINTLN("Parando teste devido ao timeout de ping");
+            currentDeviceState = DEVICE_IDLE;
+            currentTestStep = -1;
+            memset(currentModule, 0, sizeof(currentModule));
+            reset_output();
+            resumeHeartbeat();
+        }
+
+        // Reset do timestamp para evitar spam de logs
+        lastClientPing = 0;
     }
 
     // Gerencia pausa do heartbeat

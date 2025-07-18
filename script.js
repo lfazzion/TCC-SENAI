@@ -108,6 +108,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // Pausa o heartbeat durante operações críticas
     let heartbeatPaused = false;
     let criticalOperationTimeout = null;
+    
+    // === SISTEMA DE SINCRONIZAÇÃO DE ESTADO ===
+    let lastKnownState = null;
+    let reconnectionInProgress = false;
+    let pingInterval = null;
+    let lastPingTime = 0;
+    const PING_INTERVAL = 15000; // 15 segundos
+    const PING_TIMEOUT = 30000; // 30 segundos
 
 
     // =================================================================
@@ -243,6 +251,14 @@ document.addEventListener("DOMContentLoaded", () => {
             // Inicia monitoramento de heartbeat
             startHeartbeatMonitoring();
             
+            // Inicia sistema de ping bidirecional
+            startPingInterval();
+            
+            // Tenta reconectar estado se necessário
+            setTimeout(() => {
+                handleReconnection();
+            }, 1000);
+            
             updateConnectionStatus("connected");
             
         } catch (error) {
@@ -337,6 +353,106 @@ document.addEventListener("DOMContentLoaded", () => {
             criticalOperationTimeout = null;
         }
         console.log("Heartbeat reativado manualmente");
+    }
+    
+    // === SISTEMA DE SINCRONIZAÇÃO DE ESTADO ===
+    
+    async function requestDeviceStatus() {
+        try {
+            console.log("Solicitando status do dispositivo...");
+            const response = await sendJsonCommand({ 
+                comando: "get_status",
+                requiresAck: true 
+            });
+            return response;
+        } catch (error) {
+            console.error("Erro ao solicitar status:", error);
+            return null;
+        }
+    }
+    
+    async function handleReconnection() {
+        if (reconnectionInProgress) return;
+        
+        reconnectionInProgress = true;
+        console.log("Iniciando processo de reconexão...");
+        
+        try {
+            // Solicita o status atual do ESP32
+            const statusResponse = await requestDeviceStatus();
+            
+            if (statusResponse && statusResponse.currentState) {
+                console.log("Status recebido:", statusResponse.currentState);
+                
+                // Verifica se há um teste em andamento
+                if (statusResponse.currentState === "testing") {
+                    console.log("Teste em andamento detectado - tentando retomar");
+                    await resumeTestFromState(statusResponse);
+                } else if (statusResponse.currentState === "waiting_for_button") {
+                    console.log("Aguardando botão - reconectando na tela de progresso");
+                    await resumeTestFromState(statusResponse);
+                } else {
+                    console.log("Dispositivo em estado idle - continuando operação normal");
+                    lastKnownState = statusResponse.currentState;
+                }
+            }
+        } catch (error) {
+            console.error("Erro na reconexão:", error);
+        } finally {
+            reconnectionInProgress = false;
+        }
+    }
+    
+    async function resumeTestFromState(statusResponse) {
+        try {
+            // Restaura o módulo atual se disponível
+            if (statusResponse.currentModule) {
+                state.currentModule = statusResponse.currentModule;
+            }
+            
+            // Vai para a tela de progresso
+            switchToScreen("progress");
+            
+            // Solicita o estado atual do teste
+            if (statusResponse.currentStep !== undefined) {
+                await sendJsonCommand({ 
+                    comando: "test_current",
+                    requiresAck: true 
+                });
+            }
+            
+            console.log("Teste retomado com sucesso");
+        } catch (error) {
+            console.error("Erro ao retomar teste:", error);
+        }
+    }
+    
+    // === SISTEMA DE PING BIDIRECIONAL ===
+    
+    function startPingInterval() {
+        stopPingInterval();
+        
+        pingInterval = setInterval(async () => {
+            if (bleDevice && bleDevice.gatt.connected && !heartbeatPaused) {
+                try {
+                    await sendJsonCommand({ 
+                        comando: "ping",
+                        timestamp: Date.now()
+                    });
+                    lastPingTime = Date.now();
+                    console.log("Ping enviado");
+                } catch (error) {
+                    console.warn("Erro ao enviar ping:", error);
+                }
+            }
+        }, PING_INTERVAL);
+    }
+    
+    function stopPingInterval() {
+        if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+        }
     }
     
     function updateAdaptiveInterval(success) {
@@ -528,8 +644,9 @@ document.addEventListener("DOMContentLoaded", () => {
         sendCharacteristic = null;
         lastHeartbeat = 0;
         
-        // Para o monitoramento de heartbeat
+        // Para o monitoramento de heartbeat e ping
         stopHeartbeatMonitoring();
+        stopPingInterval();
         
         // Limpa intervalos de reconexão anteriores
         if (reconnectInterval) {
@@ -638,6 +755,12 @@ document.addEventListener("DOMContentLoaded", () => {
             // Processa ACK se presente
             if (json.messageId && json.status !== "heartbeat") {
                 processAcknowledgment(json.messageId);
+            }
+            
+            // Verifica se a mensagem requer ACK e envia confirmação
+            if (json.requiresAck && json.messageId) {
+                console.log(`Enviando ACK para a mensagem: ${json.messageId}`);
+                sendJsonCommand({ type: "ack", messageId: json.messageId });
             }
             
             // Processa heartbeat
@@ -1033,6 +1156,23 @@ document.addEventListener("DOMContentLoaded", () => {
                         showScreen(ui.moduleManagementScreen);
                     } else {
                         showScreen(ui.moduleSelectionScreen);
+                    }
+                    break;
+                }
+                
+                case "pong": {
+                    console.log("Pong recebido do ESP32, timestamp:", json.timestamp);
+                    lastPingTime = Date.now();
+                    break;
+                }
+                
+                case "device_status": {
+                    console.log("Status do dispositivo recebido:", json);
+                    lastKnownState = json.currentState;
+                    
+                    // Se estava tentando reconectar, processa a resposta
+                    if (reconnectionInProgress) {
+                        handleReconnection();
                     }
                     break;
                 }
