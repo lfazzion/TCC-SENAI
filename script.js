@@ -896,6 +896,13 @@ document.addEventListener("DOMContentLoaded", () => {
                         esperado: json.esperado,
                         passou: json.passou
                     };
+                    
+                    // Adiciona tempo de acionamento se disponível
+                    if (json.tempo_acionamento_ms !== undefined && json.tempo_acionamento_ms >= 0) {
+                        resultData.tempo_acionamento_ms = json.tempo_acionamento_ms;
+                        resultData.tempo_acionamento_str = json.tempo_acionamento_str;
+                    }
+                    
                     state.testResults.push(resultData);
 
                     // Atualiza a tabela de resultados se existir
@@ -915,7 +922,20 @@ document.addEventListener("DOMContentLoaded", () => {
                         const statusCell = row.querySelector('.status-value');
                         
                         if (resistanceCell) {
-                            resistanceCell.textContent = json.resistencia;
+                            let resistanceText = json.resistencia;
+                            
+                            // Adiciona tempo de acionamento se disponível e estado for ENERGIZADO
+                            if (json.estado === "ENERGIZADO") {
+                                if (json.tempo_acionamento_str) {
+                                    resistanceText += ` (⏱️ ${json.tempo_acionamento_str})`;
+                                } else if (json.tempo_acionamento_ms !== undefined && json.tempo_acionamento_ms >= 0) {
+                                    resistanceText += ` (⏱️ ${json.tempo_acionamento_ms.toFixed(1)} ms)`;
+                                } else if (json.tempo_acionamento_ms !== undefined && json.tempo_acionamento_ms < 0) {
+                                    resistanceText += ` (⏱️ ERRO)`;
+                                }
+                            }
+                            
+                            resistanceCell.textContent = resistanceText;
                         }
                         if (statusCell) {
                             if (json.esperado === "VARIÁVEL") {
@@ -1543,6 +1563,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             <th>Contato</th>
                             <th>Estado</th>
                             <th>Resistência</th>
+                            <th>Tempo Acion.</th>
                             <th>Esperado</th>
                             <th>Resultado</th>
                         </tr>
@@ -1595,10 +1616,24 @@ document.addEventListener("DOMContentLoaded", () => {
                                      res.passou === true ? "color: var(--success-color)" : "";
                     }
                     
+                    // Determina o tempo de acionamento
+                    let tempoAcionamento = "-";
+                    if (res.estado === "ENERGIZADO" && res.tempo_acionamento_str) {
+                        tempoAcionamento = res.tempo_acionamento_str;
+                    } else if (res.estado === "ENERGIZADO" && res.tempo_acionamento_ms !== undefined) {
+                        // Fallback: cria string a partir do valor numérico
+                        if (res.tempo_acionamento_ms >= 0) {
+                            tempoAcionamento = `${res.tempo_acionamento_ms.toFixed(1)} ms`;
+                        } else {
+                            tempoAcionamento = "ERRO";
+                        }
+                    }
+                    
                     tableHTML += `<tr>
                         <td>${res.contato}</td>
                         <td>${res.estado}</td>
                         <td style="${resultColor}; font-family: monospace; font-weight: 500;">${res.resistencia}</td>
+                        <td style="font-family: monospace; font-size: 0.9rem; text-align: center;">${tempoAcionamento}</td>
                         <td>${esperado}</td>
                         <td style="${resultColor}; font-weight: bold;">${passou}</td>
                     </tr>`;

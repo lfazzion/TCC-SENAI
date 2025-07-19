@@ -426,7 +426,16 @@ input:checked + .slider:before {
     font-weight: 500;
 }
 
-.results-table td:nth-child(5) {
+.results-table td:nth-child(4) {
+    /* Coluna de Tempo de Acionamento */
+    font-family: monospace;
+    font-size: 0.85rem;
+    color: var(--light-text-color);
+    text-align: center;
+}
+
+.results-table td:nth-child(6) {
+    /* Coluna de Resultado (antes era 5, agora é 6) */
     font-weight: 600;
 }
 

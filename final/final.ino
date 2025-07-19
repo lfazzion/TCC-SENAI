@@ -59,6 +59,14 @@
 // Usa média aparada rápida com 6 amostras e descarte de 15% dos extremos
 // Oferece boa precisão com velocidade adequada para testes em produção
 
+// --- Constantes para Medição de Tempo de Acionamento ---
+#define TIMEOUT_ACIONAMENTO 5000000    // 5 segundos máximo (em microssegundos)
+#define THRESHOLD_MUDANCA_ESTADO 10.0  // Limiar em Ω para detectar mudança
+
+// --- Configurações Otimizadas do ADC ---
+#define ADC_TAXA_NORMAL 3  // 128 SPS para medições normais
+#define ADC_TAXA_RAPIDA 7  // 860 SPS para medição de tempo (máxima velocidade)
+
 // --- Critérios de Avaliação Melhorados ---
 #define LIMITE_BAIXA_RESISTENCIA 15.0    // Aumentado de 10.0 para 15.0 Ω
 #define LIMITE_RESISTENCIA_MINIMA 100.0  // Mínimo para considerar "aberto"
@@ -259,7 +267,7 @@ float get_res_calibracao() {
     }
 
     // Restaura configuração original do ADC
-    ADS.setDataRate(3);  // Volta para 128 SPS
+    ADS.setDataRate(ADC_TAXA_NORMAL);  // Volta para 128 SPS
 
     if (leituras_validas < NUM_LEITURAS / 2) {
         DEBUG_PRINT("get_res_calibracao: leituras insuficientes: ");
@@ -347,6 +355,11 @@ float res_cal = 0.0;
 int value = 0;
 int num = 0;
 bool relay_state = false;
+
+// Variáveis para medição de tempo de acionamento
+float ultimo_tempo_acionamento =
+    0.0;  // Em milissegundos (convertido de microssegundos)
+bool medicao_tempo_habilitada = false;
 
 // Estrutura para armazenar a configuração do teste recebida da WebApp
 struct TestConfig {
@@ -503,8 +516,8 @@ float get_res() {
     }
 
     // Configuração otimizada para medições mais estáveis
-    ADS.setDataRate(3);  // 3 = 128 SPS - mais estável que 4 (250 SPS)
-    ADS.setGain(1);      // Reconfirma o ganho
+    ADS.setDataRate(ADC_TAXA_NORMAL);  // 128 SPS - mais estável
+    ADS.setGain(1);                    // Reconfirma o ganho
 
     // Teste rápido para detecção de circuito aberto
     delay(10);
@@ -608,7 +621,235 @@ float get_res() {
     return media_aparada;
 }
 
+/**
+ * @brief Mede o tempo de acionamento do relé em teste
+ * Monitora a mudança de resistência para detectar quando o relé efetivamente
+ * comuta
+ * @return Tempo de acionamento em milissegundos ou -1.0 em caso de erro/timeout
+ */
+float medirTempoAcionamento() {
+    if (!ADS.isConnected()) {
+        DEBUG_PRINTLN("ERRO: ADS não conectado durante medição de tempo");
+        return -1.0;
+    }
 
+    // Configuração para máxima velocidade
+    ADS.setDataRate(ADC_TAXA_RAPIDA);  // 860 SPS para máxima resolução temporal
+    ADS.setGain(1);                    // Reconfirma o ganho
+
+    // Aguarda estabilização mínima
+    delayMicroseconds(500);
+
+    // Lê o estado inicial
+    float resistencia_inicial = -1.0;
+    int tentativas_inicial = 0;
+    const int MAX_TENTATIVAS_INICIAL = 2;  // Reduzido para otimizar velocidade
+
+    while (resistencia_inicial < 0 &&
+           tentativas_inicial < MAX_TENTATIVAS_INICIAL) {
+        int16_t val_01 = ADS.readADC_Differential_0_1();
+        int16_t val_13 = ADS.readADC_Differential_1_3();
+
+        float volts_ref = ADS.toVoltage(val_01);
+        float volts = ADS.toVoltage(val_13);
+
+        // Verifica se as leituras são válidas
+        if (abs(volts_ref) > 0.0001) {
+            resistencia_inicial = (volts / volts_ref) * res_ref - res_cal;
+            break;
+        }
+        tentativas_inicial++;
+        delayMicroseconds(200);  // Delay mínimo entre tentativas
+    }
+
+    if (resistencia_inicial < 0) {
+        DEBUG_PRINTLN(
+            "ERRO: Não foi possível ler estado inicial para medição de tempo");
+        // Restaura configuração antes de retornar
+        ADS.setDataRate(ADC_TAXA_NORMAL);
+        return -1.0;
+    }
+
+    DEBUG_PRINT("Resistência inicial: ");
+    DEBUG_PRINTLN(resistencia_inicial);
+    DEBUG_PRINTLN("Iniciando medição de tempo otimizada...");
+
+    // Marca o início da medição usando microssegundos
+    unsigned long inicio_medicao = micros();
+    unsigned long tempo_acionamento_us = 0;
+    bool mudanca_detectada = false;
+
+    // Loop de monitoramento otimizado - SEM delays desnecessários
+    while ((micros() - inicio_medicao) < TIMEOUT_ACIONAMENTO &&
+           !mudanca_detectada) {
+        // Remove delay(INTERVALO_LEITURA_ADC) - deixa o ADC determinar a
+        // velocidade
+
+        // Lê valores atuais
+        int16_t val_01 = ADS.readADC_Differential_0_1();
+        int16_t val_13 = ADS.readADC_Differential_1_3();
+
+        float volts_ref = ADS.toVoltage(val_01);
+        float volts = ADS.toVoltage(val_13);
+
+        // Verifica se a leitura é válida
+        if (abs(volts_ref) > 0.0001) {
+            float resistencia_atual = (volts / volts_ref) * res_ref - res_cal;
+
+            // Detecta mudança significativa de estado
+            float diferenca = abs(resistencia_atual - resistencia_inicial);
+
+            // Critério de mudança: diferença maior que o threshold OU
+            // mudança de estado fechado<->aberto
+            bool mudanca_significativa = (diferenca > THRESHOLD_MUDANCA_ESTADO);
+            bool mudanca_estado_aberto =
+                (resistencia_inicial < 50.0 && resistencia_atual > 500.0) ||
+                (resistencia_inicial > 500.0 && resistencia_atual < 50.0);
+
+            if (mudanca_significativa || mudanca_estado_aberto) {
+                tempo_acionamento_us = micros() - inicio_medicao;
+                mudanca_detectada = true;
+
+                DEBUG_PRINT("Mudança detectada! Resistência: ");
+                DEBUG_PRINT(resistencia_inicial);
+                DEBUG_PRINT(" -> ");
+                DEBUG_PRINTLN(resistencia_atual);
+                DEBUG_PRINT("Tempo de acionamento: ");
+                DEBUG_PRINT(tempo_acionamento_us);
+                DEBUG_PRINTLN(" us");
+                break;
+            }
+        }
+    }
+
+    // Restaura configuração normal do ADC
+    ADS.setDataRate(ADC_TAXA_NORMAL);  // Volta para 128 SPS
+
+    if (!mudanca_detectada) {
+        DEBUG_PRINTLN("TIMEOUT: Mudança de estado não detectada");
+        return -1.0;
+    }
+
+    // Converte de microssegundos para milissegundos
+    float tempo_ms = tempo_acionamento_us / 1000.0;
+
+    DEBUG_PRINT("Tempo final: ");
+    DEBUG_PRINT(tempo_ms);
+    DEBUG_PRINTLN(" ms");
+
+    return tempo_ms;
+}
+
+/**
+ * @brief Mede o tempo de acionamento após o relé já ter sido acionado
+ * Versão otimizada com resolução de microssegundos e ADC em máxima velocidade
+ * @return Tempo de acionamento em milissegundos ou -1.0 em caso de erro/timeout
+ */
+float medirTempoAcionamentoAposAcionamento() {
+    if (!ADS.isConnected()) {
+        DEBUG_PRINTLN("ERRO: ADS não conectado durante medição de tempo");
+        return -1.0;
+    }
+
+    // Configura ADC para máxima velocidade (860 SPS = ~1.16ms por leitura)
+    ADS.setDataRate(ADC_TAXA_RAPIDA);  // 860 SPS para máxima resolução temporal
+    ADS.setGain(1);
+
+    // Aguarda estabilização mínima (reduzido para otimizar timing)
+    delayMicroseconds(500);  // 0.5ms em vez de 5ms
+
+    DEBUG_PRINTLN("Iniciando medição de tempo OTIMIZADA...");
+
+    // Marca o início da medição usando microssegundos para máxima precisão
+    unsigned long inicio_medicao = micros();
+    unsigned long tempo_acionamento_us = 0;
+    bool mudanca_detectada = false;
+
+    // Lê o estado inicial com menos tentativas para otimizar velocidade
+    float resistencia_inicial = -1.0;
+    for (int tentativa = 0; tentativa < 2; tentativa++) {
+        int16_t val_01 = ADS.readADC_Differential_0_1();
+        int16_t val_13 = ADS.readADC_Differential_1_3();
+
+        float volts_ref = ADS.toVoltage(val_01);
+        float volts = ADS.toVoltage(val_13);
+
+        if (abs(volts_ref) > 0.0001) {
+            resistencia_inicial = (volts / volts_ref) * res_ref - res_cal;
+            break;
+        }
+        delayMicroseconds(200);  // Delay mínimo entre tentativas
+    }
+
+    if (resistencia_inicial < 0) {
+        DEBUG_PRINTLN("ERRO: Não foi possível ler estado inicial");
+        // Restaura configuração normal antes de retornar
+        ADS.setDataRate(ADC_TAXA_NORMAL);
+        return -1.0;
+    }
+
+    DEBUG_PRINT("Resistência inicial: ");
+    DEBUG_PRINTLN(resistencia_inicial);
+
+    // Loop de monitoramento otimizado - SEM delays desnecessários
+    // A velocidade é limitada apenas pela taxa do ADC (860 SPS = ~1.16ms)
+    while ((micros() - inicio_medicao) < TIMEOUT_ACIONAMENTO &&
+           !mudanca_detectada) {
+        // Remove delay(INTERVALO_LEITURA_ADC) - deixa o ADC determinar a
+        // velocidade
+
+        // Lê valores atuais
+        int16_t val_01 = ADS.readADC_Differential_0_1();
+        int16_t val_13 = ADS.readADC_Differential_1_3();
+
+        float volts_ref = ADS.toVoltage(val_01);
+        float volts = ADS.toVoltage(val_13);
+
+        // Verifica se a leitura é válida
+        if (abs(volts_ref) > 0.0001) {
+            float resistencia_atual = (volts / volts_ref) * res_ref - res_cal;
+
+            // Detecta mudança significativa de estado
+            float diferenca = abs(resistencia_atual - resistencia_inicial);
+
+            bool mudanca_significativa = (diferenca > THRESHOLD_MUDANCA_ESTADO);
+            bool mudanca_estado_aberto =
+                (resistencia_inicial < 50.0 && resistencia_atual > 500.0) ||
+                (resistencia_inicial > 500.0 && resistencia_atual < 50.0);
+
+            if (mudanca_significativa || mudanca_estado_aberto) {
+                tempo_acionamento_us = micros() - inicio_medicao;
+                mudanca_detectada = true;
+
+                DEBUG_PRINT("Mudança detectada! Resistência: ");
+                DEBUG_PRINT(resistencia_inicial);
+                DEBUG_PRINT(" -> ");
+                DEBUG_PRINTLN(resistencia_atual);
+                DEBUG_PRINT("Tempo de acionamento: ");
+                DEBUG_PRINT(tempo_acionamento_us);
+                DEBUG_PRINTLN(" us");
+                break;
+            }
+        }
+    }
+
+    // Restaura configuração normal do ADC
+    ADS.setDataRate(ADC_TAXA_NORMAL);
+
+    if (!mudanca_detectada) {
+        DEBUG_PRINTLN("TIMEOUT: Mudança de estado não detectada");
+        return -1.0;
+    }
+
+    // Converte de microssegundos para milissegundos com alta precisão
+    float tempo_ms = tempo_acionamento_us / 1000.0;
+
+    DEBUG_PRINT("Tempo final: ");
+    DEBUG_PRINT(tempo_ms);
+    DEBUG_PRINTLN(" ms");
+
+    return tempo_ms;
+}
 
 void action_relay(int relay_action) {
     relay_state = !relay_state;
@@ -627,7 +868,58 @@ void action_relay(int relay_action) {
     DEBUG_PRINTLN(relay_status);
 }
 
+/**
+ * @brief Aciona o relé com medição de tempo de acionamento
+ * @param relay_pin Pino do relé (RELAY_DC ou RELAY_AC)
+ * @param estado_desejado true para energizar, false para desenergizar
+ * @param medir_tempo true para medir o tempo de acionamento
+ * @return Tempo de acionamento em ms (se medir_tempo=true) ou 0.0
+ */
+float acionarReleComTempo(int relay_pin, bool estado_desejado,
+                          bool medir_tempo = false) {
+    float tempo_acionamento = 0.0;
 
+    // Debug do estado atual
+    char relay_type[8];
+    strcpy(relay_type, (relay_pin == RELAY_DC) ? "DC" : "AC");
+
+    char estado_str[16];
+    strcpy(estado_str, estado_desejado ? "ENERGIZAR" : "DESENERGIZAR");
+
+    DEBUG_PRINT("Acionando relé ");
+    DEBUG_PRINT(relay_type);
+    DEBUG_PRINT(" para ");
+    DEBUG_PRINTLN(estado_str);
+
+    // Se deve medir tempo e o relé está mudando de estado
+    if (medir_tempo && (digitalRead(relay_pin) != estado_desejado)) {
+        // Configura o ADC para leituras rápidas antes de acionar
+        if (ADS.isConnected()) {
+            ADS.setDataRate(ADC_TAXA_RAPIDA);  // 860 SPS para máxima velocidade
+            ADS.setGain(1);
+            delayMicroseconds(500);  // Aguarda estabilização mínima
+        }
+
+        // Aciona o relé e simultaneamente inicia a medição
+        digitalWrite(relay_pin, estado_desejado);
+        tempo_acionamento = medirTempoAcionamentoAposAcionamento();
+        ultimo_tempo_acionamento = tempo_acionamento;
+    } else {
+        // Aciona o relé normalmente sem medição
+        digitalWrite(relay_pin, estado_desejado);
+    }
+
+    // Atualiza estado global se necessário
+    if ((relay_pin == RELAY_DC && estado_desejado) ||
+        (relay_pin == RELAY_AC && estado_desejado)) {
+        relay_state = true;
+    } else if ((relay_pin == RELAY_DC && !estado_desejado) ||
+               (relay_pin == RELAY_AC && !estado_desejado)) {
+        relay_state = false;
+    }
+
+    return tempo_acionamento;
+}
 
 // =================================================================
 // FUNÇÕES DE COMUNICAÇÃO BLE
@@ -1254,12 +1546,14 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
 
     testeAtual++;
 
-    // --- ACIONAMENTO DO RELÉ ---
+    // --- ACIONAMENTO DO RELÉ COM MEDIÇÃO DE TEMPO ---
+    float tempo_acionamento = 0.0;
+
     if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
-        digitalWrite(RELAY_DC, 1);
+        tempo_acionamento = acionarReleComTempo(RELAY_DC, true, true);
         state_RGB('O');  // Azul - energizado
     } else {             // TIPO_AC
-        digitalWrite(RELAY_AC, 1);
+        tempo_acionamento = acionarReleComTempo(RELAY_AC, true, true);
         state_RGB('O');  // Azul - energizado
     }
 
@@ -1285,12 +1579,27 @@ void executarTesteEspecialUmContato(const TestConfig& config) {
     resistenciaParaString(resEnergizado, res_str, sizeof(res_str));
 
     // Envia resultado sem avaliação de aprovação
+    resultDoc["status"] = "test_result";
     resultDoc["testIndex"] = testeAtual;
     resultDoc["contato"] = "COM-N# 1";
     resultDoc["estado"] = "ENERGIZADO";
     resultDoc["resistencia"] = res_str;
     resultDoc["esperado"] = "VARIÁVEL";
     resultDoc["passou"] = true;  // Sempre passa no teste especial
+
+    // Adiciona tempo de acionamento se foi medido
+    if (tempo_acionamento >= 0) {
+        resultDoc["tempo_acionamento_ms"] = tempo_acionamento;
+
+        char tempo_str[32];
+        if (tempo_acionamento >= 0) {
+            snprintf(tempo_str, sizeof(tempo_str), "%.1f ms",
+                     tempo_acionamento);
+        } else {
+            strcpy(tempo_str, "ERRO");
+        }
+        resultDoc["tempo_acionamento_str"] = tempo_str;
+    }
     sendJsonResponse(resultDoc);
 
     // Aguarda um pouco para garantir que o resultado foi enviado
@@ -1452,12 +1761,13 @@ void executarTesteConfiguravel(const TestConfig& config) {
 
         // --- CONTATO NF ENERGIZADO ---
         if (i < numContatosNF) {
-            // Aciona o relé antes do teste energizado
+            // Aciona o relé antes do teste energizado com medição de tempo
+            float tempo_acionamento = 0.0;
             if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
-                digitalWrite(RELAY_DC, 1);
+                tempo_acionamento = acionarReleComTempo(RELAY_DC, true, true);
                 state_RGB('O');  // Azul - energizado
             } else {
-                digitalWrite(RELAY_AC, 1);
+                tempo_acionamento = acionarReleComTempo(RELAY_AC, true, true);
                 state_RGB('O');  // Azul - energizado
             }
             delay(500);  // Tempo para estabilização
@@ -1513,6 +1823,21 @@ void executarTesteConfiguravel(const TestConfig& config) {
                 resultDoc["resistencia"] = res_str;
                 resultDoc["esperado"] = "ABERTO";
                 resultDoc["passou"] = (resistencia > LIMITE_RESISTENCIA_MINIMA);
+
+                // Adiciona tempo de acionamento se foi medido
+                if (tempo_acionamento >= 0) {
+                    resultDoc["tempo_acionamento_ms"] = tempo_acionamento;
+
+                    char tempo_str[32];
+                    if (tempo_acionamento >= 0) {
+                        snprintf(tempo_str, sizeof(tempo_str), "%.1f ms",
+                                 tempo_acionamento);
+                    } else {
+                        strcpy(tempo_str, "ERRO");
+                    }
+                    resultDoc["tempo_acionamento_str"] = tempo_str;
+                }
+
                 sendJsonResponse(resultDoc);
             }
 
@@ -1589,12 +1914,15 @@ void executarTesteConfiguravel(const TestConfig& config) {
 
         // --- CONTATO NA ENERGIZADO ---
         if (i < numContatosNA) {
-            // Aciona o relé antes do teste energizado
+            // Aciona o relé antes do teste energizado com medição de tempo
+            float tempo_acionamento_na = 0.0;
             if (strcmp(config.tipoAcionamento, "TIPO_DC") == 0) {
-                digitalWrite(RELAY_DC, 1);
+                tempo_acionamento_na =
+                    acionarReleComTempo(RELAY_DC, true, true);
                 state_RGB('O');  // Azul - energizado
             } else {
-                digitalWrite(RELAY_AC, 1);
+                tempo_acionamento_na =
+                    acionarReleComTempo(RELAY_AC, true, true);
                 state_RGB('O');  // Azul - energizado
             }
             delay(500);  // Tempo para estabilização
@@ -1651,6 +1979,21 @@ void executarTesteConfiguravel(const TestConfig& config) {
                 resultDoc["esperado"] = "BAIXA";
                 resultDoc["passou"] = (resistencia >= -TOLERANCIA_NEGATIVA &&
                                        resistencia <= LIMITE_BAIXA_RESISTENCIA);
+
+                // Adiciona tempo de acionamento se foi medido
+                if (tempo_acionamento_na >= 0) {
+                    resultDoc["tempo_acionamento_ms"] = tempo_acionamento_na;
+
+                    char tempo_str[32];
+                    if (tempo_acionamento_na >= 0) {
+                        snprintf(tempo_str, sizeof(tempo_str), "%.1f ms",
+                                 tempo_acionamento_na);
+                    } else {
+                        strcpy(tempo_str, "ERRO");
+                    }
+                    resultDoc["tempo_acionamento_str"] = tempo_str;
+                }
+
                 sendJsonResponse(resultDoc);
             }
 
@@ -1888,7 +2231,7 @@ void setup() {
 
     // Configurações avançadas para estabilidade e visibilidade
     BLEDevice::setMTU(256);  // Reduzido para melhor compatibilidade
-    BLEDevice::setPower(ESP_PWR_LVL_P9);  // Máxima potência para melhor alcance
+    BLEDevice::setPower(ESP_PWR_LVL_P6);
 
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
@@ -1921,16 +2264,16 @@ void setup() {
 
     // Define os intervalos de CONEXÃO preferenciais (para estabilidade
     // pós-conexão) O dispositivo irá solicitar à interface para se comunicarem
-    // a cada 40-80ms.
-    pAdvertising->setMinPreferred(0x20);  // 40ms
-    pAdvertising->setMaxPreferred(0x40);  // 80ms
+    // a cada 30-90ms.
+    pAdvertising->setMinPreferred(0x18);  // 30ms
+    pAdvertising->setMaxPreferred(0x48);  // 90ms
 
     pAdvertising->setAdvertisementType(ADV_TYPE_IND);
 
     // Define os intervalos de ADVERTISING (para descoberta antes da conexão)
-    // O dispositivo irá se anunciar a cada 20-30ms.
-    pAdvertising->setMinInterval(0x20);  // 20ms
-    pAdvertising->setMaxInterval(0x30);  // 30ms
+    // O dispositivo irá se anunciar a cada 50-100ms.
+    pAdvertising->setMinInterval(0x50);  // 50ms
+    pAdvertising->setMaxInterval(0xA0);  // 100ms
 
     BLEDevice::startAdvertising();
 
